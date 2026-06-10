@@ -52,6 +52,8 @@ Add a fourth discovery-mode tab alongside the existing ones in `index.html`
 ### 2.1 DHCP server card
 - Inputs: NIC, pool start/end, subnet mask, gateway (optional), DNS (optional),
   lease time. Sensible defaults pre-filled from the selected NIC's subnet.
+- Advanced (collapsible) AV extras: NTP (42), domain/search (15/119), TFTP+bootfile
+  (66/67), vendor-class (60). Left blank ⇒ not served (see §5.1).
 - A **"This is an isolated/lab network"** checkbox that must be ticked to start.
 - Live **lease table**: MAC · assigned IP · hostname · expiry. Persisted to
   `userData/dhcp-leases.json`.
@@ -155,8 +157,13 @@ Electron (unprivileged)  ──spawn pkexec──▶  net-helper.js (root)
 - State machine: DISCOVER→OFFER, REQUEST→ACK/NAK, RELEASE/DECLINE handling.
 - Allocation: first free address in pool; **ARP/ping conflict check** before
   offering; sticky leases keyed by MAC; persist to `userData/dhcp-leases.json`.
-- Options served: 1 (mask), 3 (router), 6 (DNS), 51 (lease), 54 (server id), 28
-  (broadcast). Keep minimal/AV-focused.
+- **Decision: core + common AV extras.**
+  - Core (always): 1 (mask), 3 (router), 6 (DNS), 51 (lease), 54 (server id), 28
+    (broadcast).
+  - AV extras (served when configured): 42 (NTP servers), 15 (domain name), 119
+    (domain search), 66 (TFTP server name), 67 (bootfile), 60 (vendor class id),
+    12 (hostname echo). These help PTP-adjacent gear, provisioning/boot, and
+    control systems. Empty/unset extras are simply omitted from the reply.
 - Pre-flight conflict probe: send a DISCOVER as a client and listen ~3 s; if any
   OFFER returns, emit `dhcp-conflict` and refuse unless forced.
 
@@ -269,7 +276,9 @@ so the querier/detector would depend on **Npcap**. Defer until Linux is solid.
 - ~~Ship a polkit policy (smoother prompt) or accept the default `pkexec` dialog?~~
   **Resolved: ship a polkit `.policy`** (branded prompt, `auth_admin_keep` caching;
   installed by `install.sh`, with a default-dialog fallback). See §6.
-- DHCP: how much option coverage do AV devices actually need beyond mask/router/DNS?
+- ~~DHCP: how much option coverage do AV devices actually need beyond mask/router/DNS?~~
+  **Resolved: core + common AV extras** (NTP, domain/search, TFTP/bootfile,
+  vendor-class, hostname), each omitted when unset. See §2.1, §5.1.
 - ~~Should the querier also send group-specific queries, or general-only (simpler)?~~
   **Resolved: both** — general heartbeat + group-specific on fast-leave, driven by
   the detector's membership/leave stream. See §5.2.
