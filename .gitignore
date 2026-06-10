@@ -1,6 +1,7 @@
 node_modules/
 dist/
 out/
+vendor/
 *.log
 .DS_Store
 Thumbs.db

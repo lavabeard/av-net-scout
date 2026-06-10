@@ -486,7 +486,10 @@ let igmpHelper = null;
 function helperNodeBinary() {
   if (app.isPackaged) {
     const bundled = path.join(process.resourcesPath, 'node');
-    if (fs.existsSync(bundled)) return bundled;
+    if (fs.existsSync(bundled)) {
+      try { fs.chmodSync(bundled, 0o755); } catch {}  // extraResources may drop the exec bit
+      return bundled;
+    }
   }
   return process.env.AVNS_NODE || 'node';
 }
