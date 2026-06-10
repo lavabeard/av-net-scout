@@ -83,7 +83,12 @@ jobs:
             libasound2t64 \
             libpango-1.0-0 libcairo2 \
             libnspr4 libx11-xcb1 libxcb-dri3-0 \
-            ffmpeg rpm fakeroot
+            ffmpeg rpm fakeroot \
+            ruby ruby-dev
+      # electron-builder's bundled fpm (used for .deb) is an x86 binary that
+      # won't run on arm64, so install a native fpm and point it at that.
+      - name: Install native fpm (arm64 deb packaging)
+        run: sudo gem install fpm --no-document
       - run: npm ci
       - name: Bundle Node runtime for the helper
         run: |
@@ -95,6 +100,8 @@ jobs:
           chmod +x vendor/node
           vendor/node -v
       - name: Build arm64
+        env:
+          USE_SYSTEM_FPM: 'true'
         run: npx electron-builder --linux --arm64 --publish never
       - name: Smoke test
         run: |
