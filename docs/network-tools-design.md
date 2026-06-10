@@ -182,6 +182,18 @@ Electron (unprivileged)  ──spawn pkexec──▶  net-helper.js (root)
   the querier reuses the same captured report/leave stream to know which groups
   exist and which just lost a member. (Querier therefore depends on the detector
   running in the same helper.)
+- **Impl notes (Phase 2):**
+  - Built on `raw-socket` with `IP_HDRINCL` — we construct the full IP header
+    (IHL 6 with the 4-byte Router Alert option `94 04 00 00`, TTL 1, proto 2) and
+    an IGMPv2 query body, both with verified checksums.
+  - `raw-socket` does **not** expose `IP_MULTICAST_IF`/`IP_MULTICAST_TTL`. TTL is
+    set in our header; NIC egress binding uses the platform's raw setsockopt
+    number (Linux 32 / BSD 9) best-effort and non-fatal.
+  - `raw-socket@1.8.1` pins `nan@2.19` which won't compile on Node ≥ 24; an npm
+    `overrides` entry forces `nan@^2.22`. The bundled-Node decision (§4) means we
+    pick a Node the native deps support; the override keeps dev on newer Node working.
+  - Querier is driven over the detector helper's stdin (`querier-start/stop`) — it
+    is the same root process, so no second elevation prompt.
 - **Querier election:** before sending, run the detector. If another querier is
   seen with a numerically lower source IP, stay silent (it wins). Re-arm if it
   disappears (no queries for ~2× interval). Lab "force" override available.

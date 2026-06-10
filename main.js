@@ -556,16 +556,33 @@ ipcMain.handle('igmp-detect-start', (event, { iface } = {}) => {
 
 ipcMain.handle('igmp-detect-stop', () => { stopIgmpHelper(); return { ok: true }; });
 
+// Querier control reuses the detector's helper process (the querier needs the
+// capture for election + fast-leave), so we drive it over the helper's stdin.
+ipcMain.handle('igmp-querier-start', (_e, opts = {}) => {
+  if (!igmpHelper) return { error: 'detector_not_running' };
+  try { igmpHelper.stdin.write(JSON.stringify({ cmd: 'querier-start', ...opts }) + '\n'); }
+  catch (e) { return { error: 'write_failed', message: e.message }; }
+  return { ok: true };
+});
+ipcMain.handle('igmp-querier-stop', () => {
+  if (igmpHelper) { try { igmpHelper.stdin.write(JSON.stringify({ cmd: 'querier-stop' }) + '\n'); } catch {} }
+  return { ok: true };
+});
+
 function relayHelperEvent(send, ev) {
   switch (ev.ev) {
-    case 'ready':      send('igmp-ready', ev); break;
-    case 'querier':    send('igmp-querier', ev); break;
-    case 'membership': send('igmp-membership', ev); break;
-    case 'report':     send('igmp-report', ev); break;
-    case 'leave':      send('igmp-leave', ev); break;
-    case 'error':      send('igmp-error', ev); break;
-    case 'log':        break; // helper diagnostics — ignored in the UI for now
-    default:           break;
+    case 'ready':            send('igmp-ready', ev); break;
+    case 'querier':          send('igmp-querier', ev); break;
+    case 'membership':       send('igmp-membership', ev); break;
+    case 'report':           send('igmp-report', ev); break;
+    case 'leave':            send('igmp-leave', ev); break;
+    case 'querier-ready':    send('igmp-querier-ready', ev); break;
+    case 'querier-state':    send('igmp-querier-state', ev); break;
+    case 'query-sent':       send('igmp-query-sent', ev); break;
+    case 'querier-stopped':  send('igmp-querier-stopped', ev); break;
+    case 'error':            send('igmp-error', ev); break;
+    case 'log':              break; // helper diagnostics — ignored in the UI for now
+    default:                 break;
   }
 }
 

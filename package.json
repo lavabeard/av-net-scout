@@ -9,27 +9,45 @@
   },
   "license": "MIT",
   "scripts": {
-    "start":      "electron .",
-    "dist":       "electron-builder --linux --publish never",
+    "start": "electron .",
+    "dist": "electron-builder --linux --publish never",
     "dist:linux": "electron-builder --linux --publish never",
-    "pack":       "electron-builder --dir   --publish never"
+    "pack": "electron-builder --dir   --publish never"
   },
   "dependencies": {
-    "cap": "^0.2.1"
+    "cap": "^0.2.1",
+    "raw-socket": "^1.8.1"
+  },
+  "overrides": {
+    "raw-socket": {
+      "nan": "^2.22.0"
+    }
   },
   "devDependencies": {
-    "electron":         "^30.0.0",
+    "electron": "^30.0.0",
     "electron-builder": "^24.13.0"
   },
   "build": {
-    "appId":       "com.alpha.multicast-ring-analyzer",
+    "appId": "com.alpha.multicast-ring-analyzer",
     "productName": "Multicast Ring Analyzer",
-    "copyright":   "Alpha AV/IT",
-    "files": ["main.js", "preload.js", "index.html", "assets/", "scripts/"],
-    "asarUnpack": ["scripts/**", "node_modules/cap/**"],
+    "copyright": "Alpha AV/IT",
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "assets/",
+      "scripts/"
+    ],
+    "asarUnpack": [
+      "scripts/**",
+      "node_modules/cap/**"
+    ],
     "linux": {
-      "target": ["AppImage", "deb"],
-      "icon":   "assets/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png",
       "category": "Network",
       "description": "Discover and probe UDP multicast streams"
     }

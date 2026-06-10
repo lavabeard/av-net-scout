@@ -515,6 +515,26 @@ select{color:var(--t2);cursor:pointer}
       </div>
     </div>
 
+    <!-- Querier control (active tool) -->
+    <div style="background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:14px 16px;margin-top:8px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:11px;font-weight:600;letter-spacing:.3px">IGMP QUERIER</span>
+        <span style="font-size:9px;color:var(--t3)">— active tool, alters multicast on the network</span>
+        <span id="qPill" class="badge" style="font-size:9px;margin-left:auto">Off</span>
+      </div>
+      <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field"><label>Query interval (s)</label>
+          <input type="number" id="qInterval" value="125" min="5" max="600" style="width:70px"></div>
+        <label class="proto-check"><input type="checkbox" id="qForce"><span>Force (ignore election)</span></label>
+        <label class="proto-check"><input type="checkbox" id="qAck"><span>This is an isolated / lab network</span></label>
+        <button class="btn cyan" id="qBtn" onclick="toggleQuerier()" style="margin-left:auto">Start Querier</button>
+      </div>
+      <div id="qStatus" style="font-family:var(--mono);font-size:10px;color:var(--t3);line-height:1.7;margin-top:10px">
+        Requires the detector running. Sends IGMP general queries (heartbeat) to keep multicast alive on
+        snooping switches, plus group-specific queries on fast-leave. Defers to a lower-IP querier unless forced.
+      </div>
+    </div>
+
     <div class="guide" id="toolsGuide">
       <div class="guide-icon">🛠</div>
       <div class="guide-head">IGMP snooping &amp; querier detector</div>
@@ -608,6 +628,8 @@ let rotating    = false;
 let netScanning = false;
 let mdnsActive  = false;
 let igmpActive  = false;
+let querierOn   = false;
+let lastQueryCount = 0;
 let rotIdx      = 0;
 let rotTimer    = null;
 let rotList     = [];
@@ -654,6 +676,10 @@ function bindEvents() {
   window.api.igmp.onMembership(onIgmpMembership);
   window.api.igmp.onError(onIgmpError);
   window.api.igmp.onStopped(d => { if (igmpActive) log('warn', 'IGMP helper exited' + (d && d.code != null ? ' (code ' + d.code + ')' : '')); finalizeIgmpStop(); });
+  window.api.igmp.onQuerierReady(d => { querierOn = true; document.getElementById('qBtn').innerHTML = '■ Stop Querier'; log('ok', 'IGMP querier started on ' + d.srcIp + ' (interval ' + d.intervalSecs + 's' + (d.force ? ', forced' : '') + ')'); });
+  window.api.igmp.onQuerierState(renderQuerierState);
+  window.api.igmp.onQuerySent(d => { lastQueryCount = d.count; if (querierOn) renderQuerierState({ running: true, active: true, count: d.count }); });
+  window.api.igmp.onQuerierStopped(() => { finalizeQuerierStop(); log('info', 'IGMP querier stopped'); });
 }
 
 let nicNameByAddr = {};   // "192.168.1.50" → "eth0", for VLC --miface
@@ -758,6 +784,60 @@ function finalizeIgmpStop() {
   igmpActive = false;
   setIgmpStatus('stopped');
   document.getElementById('igmpBtn').innerHTML = 'Start IGMP Detector';
+  // The querier lives in the same helper — if the detector goes, so does it.
+  if (querierOn) finalizeQuerierStop();
+}
+
+// ── Network Tools: IGMP querier (active tool) ───────────────────────────────
+function setQPill(state) {
+  const pill = document.getElementById('qPill');
+  const map = {
+    off:      ['Off',         'badge'],
+    starting: ['Starting…',   'badge warn'],
+    active:   ['Active',      'badge ok'],
+    standby:  ['Standby',     'badge warn'],
+  };
+  const [txt, cls] = map[state] || map.off;
+  pill.textContent = txt; pill.className = cls;
+}
+
+function toggleQuerier() {
+  if (querierOn) { window.api.igmp.querierStop(); return; }
+  if (!igmpActive) { log('warn', 'Start the IGMP detector first — the querier needs it for election & fast-leave'); return; }
+  if (!document.getElementById('qAck').checked) { log('warn', 'Tick "isolated / lab network" to start the querier — it actively alters multicast on the network'); return; }
+  const intervalSecs = n('qInterval') || 125;
+  const force = document.getElementById('qForce').checked;
+  setQPill('starting');
+  lastQueryCount = 0;
+  log('info', 'Starting IGMP querier' + (force ? ' (forced)' : '') + ' — interval ' + intervalSecs + 's');
+  window.api.igmp.querierStart({ iface: v('tNic'), intervalSecs, force }).then(r => {
+    if (r && r.error) {
+      if (r.error === 'detector_not_running') log('err', 'Querier: start the detector first');
+      else log('err', 'Querier: ' + (r.message || r.error));
+      setQPill('off');
+    }
+  });
+}
+
+function finalizeQuerierStop() {
+  querierOn = false;
+  setQPill('off');
+  document.getElementById('qBtn').innerHTML = 'Start Querier';
+}
+
+function renderQuerierState(d) {
+  if (!d) return;
+  if (d.running) querierOn = true;
+  setQPill(d.active ? 'active' : (d.running ? 'standby' : 'off'));
+  const parts = [];
+  if (d.active) parts.push('● active querier — sending general queries');
+  else if (d.running) parts.push('○ standby — deferring to a lower-IP querier');
+  if (d.srcIp) parts.push('src ' + d.srcIp);
+  if (d.intervalSecs) parts.push('interval ' + d.intervalSecs + 's');
+  parts.push('queries sent: ' + (d.count != null ? d.count : lastQueryCount));
+  if (d.others && d.others.length) parts.push('other queriers: ' + d.others.join(', '));
+  if (d.reason) parts.push('(' + d.reason + ')');
+  document.getElementById('qStatus').textContent = parts.join('  ·  ');
 }
 
 function onIgmpError(d) {

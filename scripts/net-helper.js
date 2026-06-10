@@ -163,6 +163,7 @@ function handleRecord(rec) {
     const g = membership.get(rec.group);
     if (g) { g.delete(rec.src); if (g.size === 0) membership.delete(rec.group); }
     emit({ ev: 'leave', group: rec.group, reporter: rec.src, version: rec.version });
+    querierFastLeave(rec.group); // group-specific query burst if we're the querier
   }
 }
 
@@ -227,7 +228,7 @@ function startCapture(iface) {
     linkType = c.open(device, 'ip proto 2', 10 * 1024 * 1024, captureBuf);
     if (typeof c.setMinBytes === 'function') c.setMinBytes(0);
   } catch (e) {
-    const code = /permission|denied|EACCES|root/i.test(e.message) ? 'eaccess' : 'open_failed';
+    const code = /permission|denied|not permitted|EACCES|EPERM|root/i.test(e.message) ? 'eaccess' : 'open_failed';
     emit({ ev: 'error', code, message: 'pcap open failed on ' + device + ': ' + e.message });
     return;
   }
@@ -268,7 +269,213 @@ function startCapture(iface) {
   membershipTimer = setInterval(pruneAndSnapshot, 2000);
 }
 
+// ── IGMP querier (raw-socket) ────────────────────────────────────────────────
+// Phase 2. Sends IGMP General Queries (heartbeat that keeps snooping switches'
+// membership alive) and group-specific queries on fast-leave. Defers to an
+// existing lower-IP querier (RFC 2236 querier election) unless forced.
+
+const ALL_HOSTS = '224.0.0.1';
+
+function ipToBytes(ip) { return ip.split('.').map(o => parseInt(o, 10) & 0xff); }
+function ipNum(ip) { return ip.split('.').reduce((a, o) => (a * 256 + (parseInt(o, 10) || 0)) >>> 0, 0); }
+
+// Standard 16-bit one's-complement Internet checksum over big-endian words.
+function checksum16(buf, start = 0, end = buf.length) {
+  let sum = 0;
+  let i = start;
+  for (; i + 1 < end; i += 2) sum += (buf[i] << 8) | buf[i + 1];
+  if (i < end) sum += buf[i] << 8; // odd trailing byte
+  while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+  return (~sum) & 0xffff;
+}
+
+// IGMPv2 query body (8 bytes). group '0.0.0.0' == general query.
+function buildIgmpV2Query(group, maxRespMs = 10000) {
+  const buf = Buffer.alloc(8);
+  buf[0] = 0x11;
+  buf[1] = Math.max(1, Math.min(255, Math.round(maxRespMs / 100))); // 1/10 s units
+  const g = ipToBytes(group);
+  buf[4] = g[0]; buf[5] = g[1]; buf[6] = g[2]; buf[7] = g[3];
+  const ck = checksum16(buf, 0, 8);
+  buf[2] = (ck >> 8) & 0xff; buf[3] = ck & 0xff;
+  return buf;
+}
+
+// IPv4 header (24 bytes) with the IP Router Alert option, as IGMP requires.
+function buildIpHeaderWithRA(srcIp, dstIp, payloadLen) {
+  const ihlWords = 6; // 20 base + 4 option bytes
+  const buf = Buffer.alloc(ihlWords * 4);
+  buf[0] = (4 << 4) | ihlWords;
+  buf[1] = 0xc0;                                  // DSCP CS6 (network control)
+  const total = ihlWords * 4 + payloadLen;
+  buf[2] = (total >> 8) & 0xff; buf[3] = total & 0xff;
+  buf[8] = 1;                                     // TTL 1 (link-local)
+  buf[9] = 2;                                      // protocol = IGMP
+  const s = ipToBytes(srcIp), d = ipToBytes(dstIp);
+  buf[12] = s[0]; buf[13] = s[1]; buf[14] = s[2]; buf[15] = s[3];
+  buf[16] = d[0]; buf[17] = d[1]; buf[18] = d[2]; buf[19] = d[3];
+  buf[20] = 0x94; buf[21] = 0x04; buf[22] = 0x00; buf[23] = 0x00; // Router Alert
+  const ck = checksum16(buf, 0, buf.length);
+  buf[10] = (ck >> 8) & 0xff; buf[11] = ck & 0xff;
+  return buf;
+}
+
+// Full IP+IGMP query packet. group '0.0.0.0'/empty -> general query to 224.0.0.1.
+function buildQueryPacket(srcIp, group, maxRespMs = 10000) {
+  const g = group && group !== '0.0.0.0' ? group : '0.0.0.0';
+  const dst = g === '0.0.0.0' ? ALL_HOSTS : g;
+  const igmp = buildIgmpV2Query(g, maxRespMs);
+  const ip = buildIpHeaderWithRA(srcIp, dst, igmp.length);
+  return Buffer.concat([ip, igmp]);
+}
+
+// Querier election: we are active iff no *other* querier has a lower IP.
+function shouldBeActiveQuerier(myIp, otherQuerierIps) {
+  const me = ipNum(myIp);
+  return !otherQuerierIps.some(ip => ip !== myIp && ipNum(ip) < me);
+}
+
+const querier = {
+  running: false,
+  active: false,
+  socket: null,
+  srcIp: null,
+  intervalSecs: 125,
+  maxRespMs: 10000,
+  force: false,
+  sendTimer: null,
+  electionTimer: null,
+  count: 0,
+};
+
+function otherQuerierIps() {
+  return [...queriers.keys()].filter(ip => ip !== querier.srcIp);
+}
+
+function emitQuerierState(reason) {
+  emit({
+    ev: 'querier-state',
+    running: querier.running,
+    active: querier.active,
+    srcIp: querier.srcIp,
+    intervalSecs: querier.intervalSecs,
+    count: querier.count,
+    others: otherQuerierIps(),
+    reason: reason || null,
+  });
+}
+
+function sendQuery(group) {
+  if (!querier.socket || !querier.active) return;
+  let pkt;
+  try { pkt = buildQueryPacket(querier.srcIp, group, querier.maxRespMs); }
+  catch (e) { emit({ ev: 'error', code: 'querier_build', message: e.message }); return; }
+  const dst = group && group !== '0.0.0.0' ? group : ALL_HOSTS;
+  try {
+    querier.socket.send(pkt, 0, pkt.length, dst, () => {}, (err) => {
+      if (err) emit({ ev: 'error', code: 'querier_send', message: 'IGMP send failed: ' + err.message });
+    });
+    querier.count++;
+    emit({ ev: 'query-sent', group: group && group !== '0.0.0.0' ? group : null, dst, count: querier.count });
+  } catch (e) {
+    emit({ ev: 'error', code: 'querier_send', message: 'IGMP send failed: ' + e.message });
+  }
+}
+
+// Fast-leave: when the detector observes a Leave for a group and we are the
+// active querier, burst group-specific queries to confirm any remaining member.
+function querierFastLeave(group) {
+  if (!querier.running || !querier.active) return;
+  let n = 0;
+  const burst = setInterval(() => {
+    if (!querier.active || n >= 2) { clearInterval(burst); return; }
+    sendQuery(group);
+    n++;
+  }, 1000);
+  sendQuery(group);
+}
+
+function evaluateElection() {
+  const wantActive = querier.force || shouldBeActiveQuerier(querier.srcIp, otherQuerierIps());
+  if (wantActive !== querier.active) {
+    querier.active = wantActive;
+    emitQuerierState(wantActive
+      ? (querier.force ? 'forced-active' : 'won-election')
+      : 'deferring-to-lower-ip');
+  }
+}
+
+function startQuerier(opts) {
+  if (querier.running) { emit({ ev: 'error', code: 'querier_running', message: 'querier already running' }); return; }
+  const srcIp = opts.iface;
+  if (!srcIp || !/^\d+\.\d+\.\d+\.\d+$/.test(srcIp)) {
+    emit({ ev: 'error', code: 'querier_no_iface', message: 'querier needs an interface IP (got ' + srcIp + ')' });
+    return;
+  }
+
+  let raw;
+  try { raw = require('raw-socket'); }
+  catch (e) { emit({ ev: 'error', code: 'no_raw_socket', message: 'raw-socket not installed: ' + e.message }); return; }
+
+  // The querier needs the detector's capture for election + fast-leave.
+  if (!started) startCapture(srcIp);
+
+  let socket;
+  try {
+    socket = raw.createSocket({ protocol: 2 }); // IPPROTO_IGMP
+    // We build the full IP header (Router Alert + TTL 1), so enable HDRINCL.
+    socket.setOption(raw.SocketLevel.IPPROTO_IP, raw.SocketOption.IP_HDRINCL, 1);
+    socket.on('error', e => emit({ ev: 'error', code: 'querier_socket', message: e.message }));
+  } catch (e) {
+    const code = /permission|denied|not permitted|EACCES|EPERM|root/i.test(e.message) ? 'eaccess' : 'querier_open';
+    emit({ ev: 'error', code, message: 'raw socket setup failed: ' + e.message });
+    return;
+  }
+
+  // Best-effort: pin multicast egress to the chosen NIC. raw-socket doesn't expose
+  // IP_MULTICAST_IF, so use the platform's raw setsockopt option number. Non-fatal —
+  // without it the OS default multicast route is used.
+  try {
+    const IP_MULTICAST_IF = process.platform === 'linux' ? 32 : 9; // Linux vs BSD/macOS
+    socket.setOption(raw.SocketLevel.IPPROTO_IP, IP_MULTICAST_IF, Buffer.from(ipToBytes(srcIp)), 4);
+  } catch (e) {
+    emit({ ev: 'log', message: 'could not bind querier to NIC ' + srcIp + ': ' + e.message });
+  }
+
+  Object.assign(querier, {
+    running: true,
+    active: false,
+    socket,
+    srcIp,
+    intervalSecs: Math.max(5, parseInt(opts.intervalSecs, 10) || 125),
+    maxRespMs: Math.max(1000, parseInt(opts.maxRespMs, 10) || 10000),
+    force: !!opts.force,
+    count: 0,
+  });
+
+  evaluateElection();           // decide active vs standby immediately
+  if (querier.active) sendQuery('0.0.0.0'); // startup general query
+  querier.sendTimer = setInterval(() => { if (querier.active) sendQuery('0.0.0.0'); },
+                                  querier.intervalSecs * 1000);
+  querier.electionTimer = setInterval(evaluateElection, 5000);
+  emit({ ev: 'querier-ready', srcIp, intervalSecs: querier.intervalSecs, force: querier.force });
+  emitQuerierState('started');
+}
+
+function stopQuerier() {
+  if (!querier.running) return;
+  if (querier.sendTimer) clearInterval(querier.sendTimer);
+  if (querier.electionTimer) clearInterval(querier.electionTimer);
+  querier.sendTimer = querier.electionTimer = null;
+  if (querier.socket) { try { querier.socket.close(); } catch {} }
+  querier.socket = null;
+  querier.running = false;
+  querier.active = false;
+  emit({ ev: 'querier-stopped' });
+}
+
 function shutdown(code = 0) {
+  stopQuerier();
   if (membershipTimer) { clearInterval(membershipTimer); membershipTimer = null; }
   if (capInstance) { try { capInstance.close(); } catch {} capInstance = null; }
   started = false;
@@ -283,9 +490,11 @@ function handleCommand(line) {
   let cmd;
   try { cmd = JSON.parse(line); } catch { return; }
   switch (cmd.cmd) {
-    case 'start': if (!started) startCapture(cmd.iface); break;
-    case 'stop':  shutdown(0); break;
-    case 'ping':  emit({ ev: 'pong' }); break;
+    case 'start':         if (!started) startCapture(cmd.iface); break;
+    case 'stop':          shutdown(0); break;
+    case 'querier-start': startQuerier(cmd); break;
+    case 'querier-stop':  stopQuerier(); break;
+    case 'ping':          emit({ ev: 'pong' }); break;
     default: break;
   }
 }
@@ -356,6 +565,38 @@ function selftest() {
   check('short buffer', decodeIgmp('1.2.3.4', Buffer.from([0x11])).length === 0);
   check('unknown type', decodeIgmp('1.2.3.4', Buffer.from([0x99, 0, 0, 0, 0, 0, 0, 0])).length === 0);
 
+  // ── Querier: packet construction & checksums ──
+  // IGMP body checksum must verify to 0 over the message.
+  const body = buildIgmpV2Query('0.0.0.0', 10000);
+  check('igmp body type/len', body[0] === 0x11 && body.length === 8);
+  check('igmp checksum valid', checksum16(body, 0, 8) === 0);
+
+  // IP header: IHL=6, Router Alert option present, header checksum verifies.
+  const general = buildQueryPacket('192.168.0.5', '0.0.0.0', 10000);
+  check('packet length 24+8', general.length === 32);
+  check('ihl=6 (router alert)', (general[0] & 0x0f) === 6);
+  check('ttl=1', general[8] === 1);
+  check('proto=igmp', general[9] === 2);
+  check('router alert option', general[20] === 0x94 && general[21] === 0x04);
+  check('ip checksum valid', checksum16(general, 0, 24) === 0);
+  check('dst = all-hosts', ip4(general, 16) === '224.0.0.1');
+
+  // Group-specific query targets the group, not all-hosts.
+  const gs = buildQueryPacket('192.168.0.5', '239.1.2.3', 10000);
+  check('group query dst', ip4(gs, 16) === '239.1.2.3');
+
+  // Round-trip: our own parser must decode the query we build.
+  const rt = decodeIgmp('192.168.0.5', general.subarray(24));
+  check('round-trip decode', rt.length === 1 && rt[0].kind === 'querier' && rt[0].general === true);
+  const rtg = decodeIgmp('192.168.0.5', gs.subarray(24));
+  check('round-trip group query', rtg[0].general === false && rtg[0].group === '239.1.2.3');
+
+  // ── Querier election ──
+  check('election: alone -> active', shouldBeActiveQuerier('192.168.0.50', []) === true);
+  check('election: lower other -> standby', shouldBeActiveQuerier('192.168.0.50', ['192.168.0.10']) === false);
+  check('election: higher other -> active', shouldBeActiveQuerier('192.168.0.50', ['192.168.0.90']) === true);
+  check('election: ignore self', shouldBeActiveQuerier('192.168.0.50', ['192.168.0.50']) === true);
+
   console.log(`\nself-test: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
@@ -379,4 +620,7 @@ function main() {
 
 main();
 
-module.exports = { decodeIgmp }; // for external tests
+module.exports = { // for external tests
+  decodeIgmp, checksum16, buildIgmpV2Query, buildIpHeaderWithRA,
+  buildQueryPacket, shouldBeActiveQuerier,
+};

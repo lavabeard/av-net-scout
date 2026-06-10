@@ -44,6 +44,13 @@ contextBridge.exposeInMainWorld('api', {
     onLeave:      cb => ipcRenderer.on('igmp-leave',      (_, d) => cb(d)),
     onError:      cb => ipcRenderer.on('igmp-error',      (_, d) => cb(d)),
     onStopped:    cb => ipcRenderer.on('igmp-stopped',    (_, d) => cb(d)),
+    // Querier (active tool, same helper)
+    querierStart: (opts) => ipcRenderer.invoke('igmp-querier-start', opts),
+    querierStop:  ()     => ipcRenderer.invoke('igmp-querier-stop'),
+    onQuerierReady:   cb => ipcRenderer.on('igmp-querier-ready',   (_, d) => cb(d)),
+    onQuerierState:   cb => ipcRenderer.on('igmp-querier-state',   (_, d) => cb(d)),
+    onQuerySent:      cb => ipcRenderer.on('igmp-query-sent',      (_, d) => cb(d)),
+    onQuerierStopped: cb => ipcRenderer.on('igmp-querier-stopped', (_, d) => cb(d)),
   },
 
   removeListeners: ch => ipcRenderer.removeAllListeners(ch),
