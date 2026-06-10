@@ -205,8 +205,14 @@ reports).
 - CI (`.github/workflows/build.yml`): add a native-build step (`python3`,
   build-essential, **`libpcap-dev`**) for `raw-socket` and the pcap binding;
   verify the helper loads both under the bundled Node in the Linux smoke test.
-- `pkexec` policy: optionally ship a polkit `.policy` file for a friendlier auth
-  prompt; otherwise rely on the default `pkexec` dialog.
+- **Decision: ship a polkit `.policy` file** (installed to
+  `/usr/share/polkit-1/actions/com.avnetscout.helper.policy`) defining a single
+  action for launching the helper. Gives a branded, clear prompt ("AV Net Scout
+  needs administrator access to capture IGMP traffic and run network services"),
+  a custom icon, and `auth_admin_keep` so the user isn't re-prompted every launch
+  within the cache window. The `install.sh` one-liner drops this file (one-time
+  elevated step); document a no-policy fallback to the default `pkexec` dialog if
+  the file isn't installed.
 
 ---
 
@@ -251,7 +257,9 @@ so the querier/detector would depend on **Npcap**. Defer until Linux is solid.
 - ~~Bundle a Node runtime for the helper, or require system Node ≥ 18 on Linux?~~
   **Resolved: bundle a known Node runtime in the AppImage** (self-contained;
   `raw-socket` built once against its ABI). See §4, §6.
-- Ship a polkit policy (smoother prompt) or accept the default `pkexec` dialog?
+- ~~Ship a polkit policy (smoother prompt) or accept the default `pkexec` dialog?~~
+  **Resolved: ship a polkit `.policy`** (branded prompt, `auth_admin_keep` caching;
+  installed by `install.sh`, with a default-dialog fallback). See §6.
 - DHCP: how much option coverage do AV devices actually need beyond mask/router/DNS?
 - Should the querier also send group-specific queries, or general-only (simpler)?
 - ~~Detector via raw `IPPROTO_IGMP` recv (no extra dep) vs libpcap (richer, heavier)?~~
