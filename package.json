@@ -1,0 +1,34 @@
+{
+  "name": "multicast-ring-analyzer",
+  "version": "2.3.2",
+  "description": "Multicast & network stream scanner — range scan, SAP/mDNS discovery, RTSP/RTMP/HLS/RTP/NDI/Dante, ffprobe metadata with closed-caption detection, VLC launch",
+  "main": "main.js",
+  "author": {
+    "name": "Alpha AV/IT",
+    "email": "moultoje@gmail.com"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start":      "electron .",
+    "dist":       "electron-builder --linux --publish never",
+    "dist:linux": "electron-builder --linux --publish never",
+    "pack":       "electron-builder --dir   --publish never"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron":         "^30.0.0",
+    "electron-builder": "^24.13.0"
+  },
+  "build": {
+    "appId":       "com.alpha.multicast-ring-analyzer",
+    "productName": "Multicast Ring Analyzer",
+    "copyright":   "Alpha AV/IT",
+    "files": ["main.js", "preload.js", "index.html", "assets/"],
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon":   "assets/icon.png",
+      "category": "Network",
+      "description": "Discover and probe UDP multicast streams"
+    }
+  }
+}

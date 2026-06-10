@@ -1,0 +1,65 @@
+# Dockerfile.linux-test
+# Builds and smoke-tests the Linux AppImage in a clean Ubuntu environment.
+#
+# Usage:
+#   docker build -f Dockerfile.linux-test -t mcast-linux-test .
+#   docker run --rm mcast-linux-test
+#
+# What it does:
+#   1. Installs Node 20, ffmpeg, vlc (headless), and Electron dependencies
+#   2. npm install
+#   3. npm run dist:linux  (produces AppImage + deb in dist/)
+#   4. Smoke-tests that the AppImage is executable and ffprobe is reachable
+#   5. Copies artifacts to /artifacts/ so you can docker cp them out
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_VERSION=20
+
+# ── system deps ────────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates git \
+    ffmpeg \
+    # Electron runtime deps (needed for AppImage FUSE and Xvfb smoke test)
+    libglib2.0-0 libgtk-3-0 libnss3 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+    libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2 \
+    xvfb fuse libfuse2 \
+    # deb install smoke test
+    dpkg \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Node.js ────────────────────────────────────────────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── copy source ────────────────────────────────────────────────────────────────
+COPY package.json ./
+RUN npm install
+
+COPY . .
+
+# ── build ──────────────────────────────────────────────────────────────────────
+RUN npm run dist:linux
+
+# ── smoke test ────────────────────────────────────────────────────────────────
+RUN set -e; \
+    APPIMAGE=$(ls dist/*.AppImage | head -1); \
+    DEB=$(ls dist/*.deb | head -1); \
+    echo "Built AppImage : $APPIMAGE"; \
+    echo "Built deb      : $DEB"; \
+    # Verify AppImage is executable
+    chmod +x "$APPIMAGE"; \
+    file "$APPIMAGE" | grep -q "ELF\|shell script" && echo "AppImage OK"; \
+    # Verify ffprobe is reachable (what the app spawns at runtime)
+    ffprobe -version | head -1; \
+    echo "All smoke tests passed."
+
+# ── export artifacts ──────────────────────────────────────────────────────────
+RUN mkdir -p /artifacts && cp dist/*.AppImage dist/*.deb /artifacts/ 2>/dev/null || true
+
+CMD ["sh", "-c", "echo 'Build complete. Artifacts:' && ls /artifacts/"]

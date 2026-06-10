@@ -1,0 +1,1430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Multicast Ring Tester</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap');
+:root {
+  --bg:#0d0f0e;--bg2:#131715;--bg3:#181c1a;--bg4:#1e2320;
+  --bd:#252a27;--bd2:#31382e;--bd3:#424e44;
+  --green:#3ddc84;--gd:#1b5c38;--gl:rgba(61,220,132,.08);--gg:rgba(61,220,132,.14);
+  --amber:#f5a623;--ad:#7a4f0f;--al:rgba(245,166,35,.08);
+  --red:#e05252;--rd:#6b1f1f;--rl:rgba(224,82,82,.08);
+  --blue:#5a9cf5;--cyan:#4ecdc4;
+  --purple:#a78bfa;
+  --text:#d8e8da;--t2:#6a8a70;--t3:#384d3c;
+  --mono:'JetBrains Mono',Consolas,monospace;--sans:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;
+  height:100vh;overflow:hidden;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;user-select:none}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+  background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,0,0,.022) 3px,rgba(0,0,0,.022) 4px)}
+
+/* titlebar */
+.tb{height:38px;background:var(--bg2);border-bottom:1px solid var(--bd);display:flex;align-items:center;
+  padding:0 14px;gap:10px;flex-shrink:0;-webkit-app-region:drag}
+.tb *{-webkit-app-region:no-drag}
+.tb-logo{display:flex;align-items:center;gap:8px}
+.tb-logo svg{width:18px;height:18px}
+.tb-title{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--green);letter-spacing:.1em;text-transform:uppercase}
+.tb-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.badge{font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:3px;border:1px solid var(--bd2);color:var(--t3)}
+.badge.ok{border-color:var(--gd);color:var(--green);background:var(--gl)}
+.badge.warn{border-color:var(--ad);color:var(--amber);background:var(--al)}
+
+/* discover */
+.disc{background:var(--bg2);border-bottom:1px solid var(--bd);flex-shrink:0}
+.disc-tabs{display:flex;border-bottom:1px solid var(--bd)}
+.dtab{flex:1;padding:9px 16px;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;cursor:pointer;border:none;background:transparent;color:var(--t3);
+  border-bottom:2px solid transparent;transition:all .15s}
+.dtab:hover{color:var(--t2)}
+.dtab.active{color:var(--green);border-bottom-color:var(--green);background:var(--gl)}
+.disc-body{padding:10px 14px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+
+/* form */
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-family:var(--mono);font-size:9px;color:var(--t3);letter-spacing:.1em;text-transform:uppercase}
+.ip-box{display:flex;align-items:center;background:var(--bg3);border:1px solid var(--bd);border-radius:4px;overflow:hidden;height:28px}
+.ip-box input{background:transparent;border:none;outline:none;color:var(--text);font-family:var(--mono);font-size:12px;padding:0 4px;height:100%}
+.ip-box input:focus{background:rgba(61,220,132,.04)}
+.ip-sep{color:var(--t3);font-family:var(--mono);font-size:12px}
+.ip-x{color:var(--t3);font-family:var(--mono);font-size:12px;padding:0 8px;border-left:1px solid var(--bd)}
+input[type=number],input[type=text],input[type=password],select{background:var(--bg3);border:1px solid var(--bd);color:var(--text);
+  font-family:var(--mono);font-size:12px;padding:0 9px;height:28px;border-radius:4px;outline:none;transition:border-color .1s}
+input:focus{border-color:var(--gd);box-shadow:0 0 0 2px var(--gl)}
+select{color:var(--t2);cursor:pointer}
+.btn{height:28px;padding:0 13px;border:1px solid var(--bd2);border-radius:4px;background:var(--bg3);color:var(--t2);
+  font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;
+  display:inline-flex;align-items:center;gap:5px;transition:all .1s;white-space:nowrap}
+.btn:hover{border-color:var(--bd3);color:var(--text)}
+.btn.primary{border-color:var(--gd);color:var(--green);background:var(--gl)}
+.btn.primary:hover{background:var(--gg);border-color:var(--green)}
+.btn.amber{border-color:var(--ad);color:var(--amber);background:var(--al)}
+.btn.amber:hover{background:rgba(245,166,35,.14)}
+.btn.red{border-color:var(--rd);color:var(--red);background:var(--rl)}
+.btn.cyan{border-color:rgba(78,205,196,.4);color:var(--cyan);background:rgba(78,205,196,.07)}
+.btn.cyan:hover{background:rgba(78,205,196,.13)}
+.btn.purple{border-color:rgba(167,139,250,.4);color:var(--purple);background:rgba(167,139,250,.07)}
+.btn.purple:hover{background:rgba(167,139,250,.13)}
+.btn:disabled{opacity:.25;cursor:not-allowed;pointer-events:none}
+.btn svg{width:11px;height:11px}
+
+/* protocol checkboxes row */
+.proto-checks{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.proto-check{display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
+.proto-check input[type=checkbox]{width:12px;height:12px;cursor:pointer;accent-color:var(--green)}
+.proto-check span{font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.06em;text-transform:uppercase}
+
+/* progress */
+.prog{background:var(--bg2);border-bottom:1px solid var(--bd);padding:7px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.prog-track{flex:1;height:3px;background:var(--bd);border-radius:2px;overflow:hidden}
+.prog-fill{height:100%;background:var(--green);width:0%;transition:width .25s linear}
+.prog-fill.sap{background:var(--cyan)}
+.prog-fill.net{background:var(--purple)}
+.prog-stats{font-family:var(--mono);font-size:10px;color:var(--t2);min-width:190px;white-space:nowrap}
+.prog-found{font-family:var(--mono);font-size:10px;color:var(--green);white-space:nowrap}
+.prog-found.net{color:var(--purple)}
+
+/* rotate */
+.rot-bar{background:var(--bg3);border-bottom:1px solid var(--bd);padding:6px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.rot-lbl{font-family:var(--mono);font-size:9px;color:var(--t3);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.rot-track{flex:1;height:2px;background:var(--bd);border-radius:1px}
+.rot-fill{height:100%;background:var(--amber);width:0%;transition:width .3s linear}
+.rot-status{font-family:var(--mono);font-size:10px;color:var(--t2);min-width:220px;white-space:nowrap}
+.rot-dwell{display:flex;align-items:center;gap:5px}
+.rot-dwell label{font-family:var(--mono);font-size:9px;color:var(--t3);white-space:nowrap}
+.rot-dwell input{width:46px}
+
+/* results toolbar */
+.results-tb{background:var(--bg2);border-bottom:1px solid var(--bd);padding:6px 14px;display:flex;align-items:center;gap:7px;flex-shrink:0;flex-wrap:wrap}
+.results-tb-right{margin-left:auto;display:flex;gap:6px;align-items:center}
+.live-count{font-family:var(--mono);font-size:10px;color:var(--t3)}
+.sap-hint{padding:6px 14px;font-family:var(--mono);font-size:10px;color:var(--cyan);background:rgba(78,205,196,.05);border-bottom:1px solid rgba(78,205,196,.12);flex-shrink:0}
+
+/* main */
+.main{flex:1;overflow-y:auto;padding:12px 14px}
+.main::-webkit-scrollbar{width:5px}
+.main::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:3px}
+.guide{display:flex;flex-direction:column;align-items:center;justify-content:center;height:55vh;gap:12px;color:var(--t3);font-family:var(--mono);text-align:center;padding:40px}
+.guide-icon{font-size:36px;color:var(--bd3);margin-bottom:4px}
+.guide-head{font-size:12px;color:var(--t2)}
+.guide-body{font-size:10px;line-height:2;text-align:left}
+.guide-body em{color:var(--green);font-style:normal}
+
+/* grid */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:7px}
+
+/* card */
+.card{background:var(--bg2);border:1px solid var(--bd);border-radius:6px;position:relative;overflow:hidden;transition:border-color .15s,background .15s}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:transparent;transition:background .2s}
+.card:hover{border-color:var(--bd2)}
+.card.live{border-color:var(--gd);background:var(--bg3)}.card.live::before{background:var(--green)}
+.card.active{border-color:var(--ad)}.card.active::before{background:var(--amber)}
+.card.nosig{border-color:var(--rd);opacity:.5}.card.nosig::before{background:var(--red)}
+.card.probing::before{background:var(--blue);animation:ppulse .7s ease-in-out infinite}
+.card.sap-card.live::before{background:var(--cyan)}
+.card.net-card.live::before{background:var(--purple)}
+.card.device{border-color:rgba(167,139,250,.35)}.card.device::before{background:var(--purple);opacity:.7}
+@keyframes ppulse{0%,100%{opacity:.3}50%{opacity:1}}
+.card-inner{padding:12px 14px}
+.ch{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}
+.ch-left{display:flex;align-items:center;gap:7px}
+.ch-num{font-family:var(--mono);font-size:9px;color:var(--t3)}
+
+/* source badge */
+.src-badge{font-family:var(--mono);font-size:8px;padding:1px 5px;border-radius:2px;border:1px solid var(--bd2);color:var(--t3);text-transform:uppercase}
+.src-badge.sap{border-color:rgba(78,205,196,.3);color:var(--cyan);background:rgba(78,205,196,.06)}
+.src-badge.scan{border-color:var(--gd);color:var(--green);background:var(--gl)}
+.src-badge.mdns{border-color:rgba(167,139,250,.3);color:var(--purple);background:rgba(167,139,250,.06)}
+
+/* protocol badge */
+.proto-badge{font-family:var(--mono);font-size:8px;padding:1px 5px;border-radius:2px;border:1px solid var(--bd2);color:var(--t3);text-transform:uppercase}
+.proto-badge.rtsp{border-color:rgba(90,156,245,.35);color:var(--blue);background:rgba(90,156,245,.07)}
+.proto-badge.rtmp{border-color:rgba(224,82,82,.35);color:var(--red);background:rgba(224,82,82,.07)}
+.proto-badge.hls{border-color:rgba(61,220,132,.35);color:var(--green);background:var(--gl)}
+.proto-badge.rtp{border-color:rgba(245,166,35,.35);color:var(--amber);background:var(--al)}
+.proto-badge.udp{border-color:var(--gd);color:var(--green);background:var(--gl)}
+.proto-badge.ndi{border-color:rgba(167,139,250,.35);color:var(--purple);background:rgba(167,139,250,.07)}
+.proto-badge.dante{border-color:rgba(78,205,196,.35);color:var(--cyan);background:rgba(78,205,196,.07)}
+.proto-badge.aes67{border-color:rgba(78,205,196,.35);color:var(--cyan);background:rgba(78,205,196,.07)}
+.proto-badge.ravenna{border-color:rgba(78,205,196,.35);color:var(--cyan);background:rgba(78,205,196,.07)}
+.proto-badge.sap{border-color:rgba(78,205,196,.35);color:var(--cyan);background:rgba(78,205,196,.07)}
+
+.status-pill{display:flex;align-items:center;gap:4px}
+.sdot{width:5px;height:5px;border-radius:50%;background:var(--t3);flex-shrink:0;transition:all .2s}
+.sdot.live{background:var(--green);box-shadow:0 0 5px var(--green);animation:blink 1.4s ease-in-out infinite}
+.sdot.active{background:var(--amber);box-shadow:0 0 4px var(--amber)}
+.sdot.nosig{background:var(--red)}.sdot.probing{background:var(--blue);animation:blink .7s ease-in-out infinite}
+.sdot.device{background:var(--purple);box-shadow:0 0 4px var(--purple)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.slabel{font-family:var(--mono);font-size:9px;color:var(--t3)}
+.slabel.live{color:var(--green)}.slabel.active{color:var(--amber)}.slabel.nosig{color:var(--red)}.slabel.probing{color:var(--blue)}.slabel.device{color:var(--purple)}
+
+/* channel name field */
+.ch-name-wrap{margin-bottom:6px}
+.ch-name{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--cyan);
+  border:1px solid transparent;border-radius:3px;padding:2px 5px;margin:-2px -5px;
+  cursor:text;transition:all .1s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  display:block;user-select:text}
+.ch-name:hover{border-color:var(--bd2);background:var(--bg3)}
+.ch-name:focus{outline:none;border-color:rgba(78,205,196,.5);background:var(--bg3);box-shadow:0 0 0 2px rgba(78,205,196,.1)}
+.ch-name.empty{color:var(--t3);font-weight:400;font-style:italic}
+.ch-name.meta-suggested{color:var(--t2);font-style:italic;font-weight:400}
+
+/* address */
+.ch-addr{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text);line-height:1}
+.ch-addr span{color:var(--t3);font-weight:400}
+.ch-url{font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:2px;user-select:all;cursor:text}
+
+/* metadata from ffprobe */
+.meta{margin-top:9px;padding-top:8px;border-top:1px solid var(--bd)}
+.meta-row{display:flex;align-items:baseline;gap:6px;margin-bottom:3px;flex-wrap:wrap}
+.meta-tag{font-family:var(--mono);font-size:8px;color:var(--t3);letter-spacing:.07em;text-transform:uppercase;min-width:40px;flex-shrink:0}
+.meta-val{font-family:var(--mono);font-size:11px;font-weight:500}
+.meta-val.hi{color:var(--green)}.meta-val.ok{color:var(--text)}.meta-val.dim{color:var(--t2)}
+.meta-pill{font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;
+  border:1px solid var(--bd2);color:var(--t2);margin-right:3px}
+.cc-pill{font-family:var(--mono);font-size:9px;padding:1px 5px;border-radius:2px;
+  border:1px solid rgba(250,204,21,.4);color:#fde047;margin-right:3px;background:rgba(250,204,21,.05)}
+.meta-suggested{font-family:var(--mono);font-size:9px;color:var(--t2);font-style:italic;margin-top:4px}
+.meta-probing{margin-top:9px;padding-top:8px;border-top:1px solid var(--bd);
+  display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;color:var(--blue)}
+.spin{width:10px;height:10px;border:1.5px solid transparent;border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.meta-nosig{margin-top:9px;padding-top:8px;border-top:1px solid var(--bd);font-family:var(--mono);font-size:10px;color:var(--red)}
+.meta-device{margin-top:9px;padding-top:8px;border-top:1px solid var(--bd);font-family:var(--mono);font-size:9px;color:var(--purple);line-height:1.5}
+
+/* actions */
+.ca{display:flex;gap:5px;margin-top:9px}
+.cab{flex:1;height:25px;border-radius:3px;border:1px solid var(--bd);background:var(--bg3);color:var(--t3);
+  font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:3px;transition:all .1s}
+.cab:hover{border-color:var(--bd3);color:var(--text)}
+.cab.launch:hover{border-color:var(--gd);color:var(--green);background:var(--gl)}
+.cab svg{width:9px;height:9px}
+
+/* status / log */
+.sb{background:var(--bg2);border-top:1px solid var(--bd);padding:4px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.sb-dot{width:6px;height:6px;border-radius:50%;background:var(--t3);transition:all .2s}
+.sb-dot.on{background:var(--green);box-shadow:0 0 5px var(--green)}
+.sb-txt{font-family:var(--mono);font-size:10px;color:var(--t3);flex:1}
+.sb-env{font-family:var(--mono);font-size:9px;color:var(--bd3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.log{background:var(--bg2);border-top:1px solid var(--bd);height:86px;overflow-y:auto;flex-shrink:0}
+.log::-webkit-scrollbar{width:4px}
+.log::-webkit-scrollbar-thumb{background:var(--bd2)}
+.log-hdr{position:sticky;top:0;background:var(--bg2);padding:3px 14px;border-bottom:1px solid var(--bd);
+  font-family:var(--mono);font-size:9px;color:var(--t3);display:flex;justify-content:space-between;align-items:center;letter-spacing:.08em;text-transform:uppercase}
+.lr{padding:1px 14px;font-family:var(--mono);font-size:10px;display:flex;gap:10px;line-height:1.8}
+.lts{color:var(--t3);flex-shrink:0}
+.lm.ok{color:var(--green)}.lm.info{color:var(--blue)}.lm.warn{color:var(--amber)}.lm.err{color:var(--red)}
+
+/* modal */
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:100;display:flex;align-items:center;justify-content:center}
+.modal{background:var(--bg2);border:1px solid var(--bd2);border-radius:8px;width:700px;max-width:94vw;max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.modal-hdr{padding:14px 18px;border-bottom:1px solid var(--bd);display:flex;align-items:center;justify-content:space-between}
+.modal-title{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--cyan);letter-spacing:.08em;text-transform:uppercase}
+.modal-x{background:transparent;border:none;color:var(--t3);font-size:16px;cursor:pointer;padding:2px 6px;line-height:1}
+.modal-x:hover{color:var(--text)}
+.modal-body{padding:16px 18px;flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+.modal-desc{font-family:var(--mono);font-size:10px;color:var(--t2);line-height:1.9}
+.modal-desc strong{color:var(--text)}
+.modal-section-label{font-family:var(--mono);font-size:9px;color:var(--t3);letter-spacing:.1em;text-transform:uppercase;margin-bottom:4px}
+.import-ta{background:var(--bg3);border:1px solid var(--bd);border-radius:4px;color:var(--text);
+  font-family:var(--mono);font-size:11px;padding:10px 12px;resize:vertical;min-height:160px;
+  outline:none;width:100%;transition:border-color .1s}
+.import-ta:focus{border-color:var(--gd);box-shadow:0 0 0 2px var(--gl)}
+.import-ta::placeholder{color:var(--t3)}
+.apikey-row{display:flex;align-items:center;gap:8px}
+.apikey-row label{font-family:var(--mono);font-size:9px;color:var(--t3);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.apikey-row input{flex:1;font-size:11px}
+.apikey-hint{font-family:var(--mono);font-size:9px;color:var(--t3);margin-top:4px;line-height:1.6}
+.modal-status{font-family:var(--mono);font-size:10px;min-height:18px;line-height:1.6;padding:0 2px}
+.modal-status.ok{color:var(--green)}.modal-status.err{color:var(--red)}.modal-status.info{color:var(--blue)}.modal-status.warn{color:var(--amber)}
+.modal-ftr{padding:12px 18px;border-top:1px solid var(--bd);display:flex;gap:8px;justify-content:flex-end}
+.spinner{display:inline-block;width:11px;height:11px;border:1.5px solid transparent;border-top-color:currentColor;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle}
+</style>
+</head>
+<body>
+
+<!-- TITLEBAR -->
+<div class="tb">
+  <div class="tb-logo">
+    <svg viewBox="0 0 18 18" fill="none">
+      <circle cx="9" cy="9" r="2.5" fill="#3ddc84"/>
+      <circle cx="9" cy="9" r="5" stroke="#3ddc84" stroke-width=".8" stroke-dasharray="1.8 1.8"/>
+      <circle cx="9" cy="9" r="8" stroke="#1b5c38" stroke-width=".8"/>
+    </svg>
+    <span class="tb-title">Multicast Ring Tester</span>
+  </div>
+  <div class="tb-right">
+    <span class="badge" id="bFfprobe">ffprobe…</span>
+    <span class="badge" id="bVlc">vlc…</span>
+  </div>
+</div>
+
+<!-- DISCOVER -->
+<div class="disc">
+  <div class="disc-tabs">
+    <button class="dtab active" id="tabRange" onclick="setMode('range')">⊞ Range Scan</button>
+    <button class="dtab"        id="tabSap"   onclick="setMode('sap')">◎ SAP Listen</button>
+    <button class="dtab"        id="tabNet"   onclick="setMode('net')">⊕ Network Discovery</button>
+  </div>
+
+  <!-- Range Config -->
+  <div class="disc-body" id="rangeConfig">
+    <div class="field"><label>IP Prefix</label>
+      <div class="ip-box">
+        <input type="text" id="oct1" value="239" maxlength="3" size="3">
+        <span class="ip-sep">.</span>
+        <input type="text" id="oct2" value="252" maxlength="3" size="3">
+        <span class="ip-sep">.</span>
+        <input type="text" id="oct3" value="10"  maxlength="3" size="3">
+        <span class="ip-sep">.</span>
+        <span class="ip-x">x</span>
+      </div>
+    </div>
+    <div class="field"><label>Start</label><input type="number" id="rStart" value="1"  min="0" max="254" style="width:58px"></div>
+    <div class="field"><label>End</label>  <input type="number" id="rEnd"   value="50" min="1" max="255" style="width:58px"></div>
+    <div class="field"><label>Port</label> <input type="number" id="rPort"  value="4444" min="1" max="65535" style="width:72px"></div>
+    <div class="field"><label>Timeout (s)</label><input type="number" id="rTimeout" value="5" min="2" max="30" style="width:52px"></div>
+    <div class="field"><label>Concurrent</label> <input type="number" id="rConc"    value="10" min="1" max="24" style="width:52px"></div>
+    <div class="field"><label>NIC / Interface</label>
+      <select id="rNic" style="width:170px"><option value="">Auto (any)</option></select></div>
+    <div class="field" style="justify-content:flex-end">
+      <button class="btn primary" id="scanBtn" onclick="toggleScan()">
+        <svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 2.5v3.5l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        Scan Network
+      </button>
+    </div>
+  </div>
+
+  <!-- SAP Config -->
+  <div class="disc-body" id="sapConfig" style="display:none">
+    <div class="field"><label>Bind NIC</label>
+      <select id="sNic" style="width:200px"><option value="">Any interface</option></select></div>
+    <div class="field" style="justify-content:flex-end">
+      <button class="btn primary" id="sapBtn" onclick="toggleSap()"
+        style="border-color:rgba(78,205,196,.4);color:var(--cyan);background:rgba(78,205,196,.07)">
+        <svg viewBox="0 0 11 11" fill="none">
+          <circle cx="5.5" cy="5.5" r="1.8" fill="currentColor"/>
+          <circle cx="5.5" cy="5.5" r="3.5" stroke="currentColor" stroke-width=".9" stroke-dasharray="1.5 1.5"/>
+          <circle cx="5.5" cy="5.5" r="5"   stroke="currentColor" stroke-width=".7" opacity=".4"/>
+        </svg>
+        Start Listening
+      </button>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--t3);line-height:1.8;padding-bottom:2px">
+      Joins 224.2.127.254:9875 — encoders that broadcast SAP appear automatically and are probed.
+    </div>
+  </div>
+
+  <!-- Network Discovery Config -->
+  <div class="disc-body" id="netConfig" style="display:none">
+    <div class="field"><label>Subnet</label>
+      <input type="text" id="nSubnet" placeholder="192.168.1" style="width:120px"></div>
+    <div class="field"><label>UDP Port</label>
+      <input type="number" id="nUdpPort" value="4444" min="1" max="65535" style="width:72px"></div>
+    <div class="field"><label>Timeout (s)</label>
+      <input type="number" id="nTimeout" value="3" min="1" max="30" style="width:52px"></div>
+    <div class="field"><label>Concurrent</label>
+      <input type="number" id="nConc" value="20" min="1" max="50" style="width:52px"></div>
+    <div class="field"><label>NIC</label>
+      <select id="nNic" style="width:160px"><option value="">Auto (any)</option></select></div>
+    <div class="field">
+      <label>Protocols</label>
+      <div class="proto-checks">
+        <label class="proto-check"><input type="checkbox" id="pRtsp" checked><span>RTSP</span></label>
+        <label class="proto-check"><input type="checkbox" id="pRtmp" checked><span>RTMP</span></label>
+        <label class="proto-check"><input type="checkbox" id="pHls"  checked><span>HLS</span></label>
+        <label class="proto-check"><input type="checkbox" id="pUdp"  checked><span>UDP</span></label>
+        <label class="proto-check"><input type="checkbox" id="pNdi"  checked><span>mDNS/NDI</span></label>
+        <label class="proto-check"><input type="checkbox" id="pDante" checked><span>Dante/AES67</span></label>
+      </div>
+    </div>
+    <div class="field" style="justify-content:flex-end;flex-direction:row;gap:6px;align-items:flex-end">
+      <button class="btn purple" id="netScanBtn" onclick="toggleNetScan()">
+        <svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 2.5v3.5l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        Scan
+      </button>
+      <button class="btn cyan" id="mdnsBtn" onclick="toggleMdns()">
+        <svg viewBox="0 0 11 11" fill="none">
+          <circle cx="5.5" cy="5.5" r="1.8" fill="currentColor"/>
+          <circle cx="5.5" cy="5.5" r="3.5" stroke="currentColor" stroke-width=".9" stroke-dasharray="1.5 1.5"/>
+          <circle cx="5.5" cy="5.5" r="5"   stroke="currentColor" stroke-width=".7" opacity=".4"/>
+        </svg>
+        mDNS Listen
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="sap-hint" id="sapHint" style="display:none">◎ SAP Listener active — waiting for encoder announcements on 224.2.127.254:9875</div>
+
+<!-- SCAN PROGRESS (range scan) -->
+<div class="prog" id="progBar" style="display:none">
+  <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+  <span class="prog-stats" id="progStats">—</span>
+  <span class="prog-found" id="progFound"></span>
+  <button class="btn red" onclick="stopScan()" style="height:24px;padding:0 10px">■ Stop</button>
+</div>
+
+<!-- NET SCAN PROGRESS -->
+<div class="prog" id="netProgBar" style="display:none">
+  <div class="prog-track"><div class="prog-fill net" id="netProgFill"></div></div>
+  <span class="prog-stats" id="netProgStats">—</span>
+  <span class="prog-found net" id="netProgFound"></span>
+  <button class="btn red" onclick="stopNetScan()" style="height:24px;padding:0 10px">■ Stop</button>
+</div>
+
+<!-- ROTATE BAR -->
+<div class="rot-bar" id="rotBar" style="display:none">
+  <span class="rot-lbl">↻ Rotating</span>
+  <div class="rot-track"><div class="rot-fill" id="rotFill"></div></div>
+  <span class="rot-status" id="rotStatus">—</span>
+  <div class="rot-dwell"><label>Dwell</label>
+    <input type="number" id="dwellSec" value="6" min="2" max="120">
+    <span style="font-family:var(--mono);font-size:9px;color:var(--t3)">s</span></div>
+  <button class="btn red" onclick="stopRotate()" style="height:24px;padding:0 10px">■ Stop</button>
+</div>
+
+<!-- RESULTS TOOLBAR (multicast tab) -->
+<div class="results-tb" id="resultsTb" style="display:none">
+  <span class="live-count" id="liveCount"></span>
+  <button class="btn primary" onclick="openAllVlc()">
+    <svg viewBox="0 0 11 11" fill="none"><polygon points="1,0.5 10,5.5 1,10.5" fill="currentColor"/></svg>
+    Open All in VLC
+  </button>
+  <button class="btn primary" onclick="exportM3u()">
+    <svg viewBox="0 0 11 11" fill="none"><path d="M5.5 1.5v6M3 6l2.5 2.5L8 6M2 9.5h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    Export M3U
+  </button>
+  <button class="btn cyan" onclick="openImport()">
+    <svg viewBox="0 0 11 11" fill="none"><path d="M5.5 1l1.3 3L10 5.5l-3.2 1.5L5.5 10l-1.3-3L1 5.5l3.2-1.5Z" fill="currentColor"/></svg>
+    Import Names
+  </button>
+  <button class="btn amber" id="rotBtn" onclick="toggleRotate()">
+    <svg viewBox="0 0 11 11" fill="none"><path d="M9 5.5A3.5 3.5 0 1 1 5.5 2M9 2v3.5H5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    Auto-Rotate
+  </button>
+  <button class="btn" onclick="probeAll()">
+    <svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 2.5v3.5l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+    Probe All
+  </button>
+  <div class="results-tb-right">
+    <select id="sortSel" onchange="rerenderGrid()" style="height:24px;font-size:10px">
+      <option value="order">Order found</option>
+      <option value="ip">IP address</option>
+      <option value="bitrate">Bitrate</option>
+      <option value="name">Name</option>
+    </select>
+    <button class="btn" onclick="clearAll()" style="height:24px;padding:0 10px">✕ Clear</button>
+  </div>
+</div>
+
+<!-- NET RESULTS TOOLBAR -->
+<div class="results-tb" id="netResultsTb" style="display:none">
+  <span class="live-count" id="netLiveCount"></span>
+  <button class="btn primary" onclick="exportNetM3u()">
+    <svg viewBox="0 0 11 11" fill="none"><path d="M5.5 1.5v6M3 6l2.5 2.5L8 6M2 9.5h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    Export M3U
+  </button>
+  <div class="results-tb-right">
+    <button class="btn" onclick="clearNetAll()" style="height:24px;padding:0 10px">✕ Clear</button>
+  </div>
+</div>
+
+<!-- MAIN AREA (shared wrapper, tabs show/hide their grid) -->
+<div class="main" id="main">
+  <!-- Multicast grid -->
+  <div id="castArea">
+    <div class="guide" id="guide">
+      <div class="guide-icon">◎</div>
+      <div class="guide-head">Discover and verify multicast streams</div>
+      <div class="guide-body">
+        <em>Range Scan</em>  — probes every IP in a range in parallel with ffprobe<br>
+        <em>SAP Listen</em>  — passive: encoders announce themselves automatically<br><br>
+        Each live stream shows codec · resolution · fps · bitrate · audio from ffprobe.<br>
+        Click the <em>channel name</em> field on any card to label it.<br>
+        Use <em>Import Names</em> to bulk-assign names from any list or document.
+      </div>
+    </div>
+    <div class="grid" id="grid" style="display:none"></div>
+  </div>
+
+  <!-- Network discovery grid -->
+  <div id="netArea" style="display:none">
+    <div class="guide" id="netGuide">
+      <div class="guide-icon">⊕</div>
+      <div class="guide-head">Discover AV streams on your LAN</div>
+      <div class="guide-body">
+        <em>Scan</em>  — TCP-checks each IP for RTSP, RTMP, HLS then probes with ffprobe<br>
+        <em>mDNS Listen</em>  — discovers NDI, Dante, AES67, Ravenna via multicast DNS<br><br>
+        Enter your subnet prefix (e.g. <em>192.168.1</em>) and select protocols.<br>
+        Results appear as streams are found — no need to wait for the scan to finish.<br><br>
+        NDI / Dante / AES67 show as <em>discovered devices</em> — they are not URL<br>
+        streams, so they need their own receiver (NDI Tools, Dante Controller, etc.).
+      </div>
+    </div>
+    <div class="grid" id="netGrid" style="display:none"></div>
+  </div>
+</div>
+
+<!-- LOG -->
+<div class="log" id="logPanel">
+  <div class="log-hdr">
+    <span>Activity Log</span>
+    <button class="btn" onclick="clearLog()" style="height:16px;padding:0 6px;font-size:8px">Clear</button>
+  </div>
+  <div id="logBody"></div>
+</div>
+
+<!-- STATUS BAR -->
+<div class="sb">
+  <div class="sb-dot" id="sbDot"></div>
+  <span class="sb-txt" id="sbTxt">Idle</span>
+  <span class="sb-env" id="sbEnv"></span>
+</div>
+
+<!-- IMPORT NAMES MODAL -->
+<div class="modal-backdrop" id="importModal" style="display:none" onclick="if(event.target===this)closeImport()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-hdr">
+      <span class="modal-title">◎ Import Channel Names</span>
+      <button class="modal-x" onclick="closeImport()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-desc">
+        Paste <strong>anything</strong> — a channel list, spreadsheet, encoder config, or free-form notes.<br>
+        AI reads the data, matches streams by IP address, and fills in the channel name fields.<br>
+        Technical metadata (codec, resolution, bitrate) comes automatically from ffprobe.
+      </div>
+      <div>
+        <div class="modal-section-label">Paste stream data</div>
+        <textarea class="import-ta" id="importData"
+          placeholder="Paste anything — examples:&#10;&#10;239.252.10.10 = Lobby Camera East&#10;239.252.10.11 = Lobby Camera West&#10;239.252.10.12 = Loading Dock&#10;&#10;Or a spreadsheet, encoder output, channel schedule..."></textarea>
+      </div>
+      <div>
+        <div class="modal-section-label">Anthropic API Key</div>
+        <div class="apikey-row">
+          <input type="password" id="apiKey" placeholder="sk-ant-…" style="width:100%">
+        </div>
+        <div class="apikey-hint">
+          Get a key at console.anthropic.com · Stored locally in this app only · Never sent anywhere except Anthropic
+        </div>
+      </div>
+      <div class="modal-status" id="importStatus"></div>
+    </div>
+    <div class="modal-ftr">
+      <button class="btn" onclick="closeImport()">Cancel</button>
+      <button class="btn cyan" id="parseBtn" onclick="parseWithAI()">
+        <svg viewBox="0 0 11 11" fill="none"><path d="M5.5 1l1.3 3L10 5.5l-3.2 1.5L5.5 10l-1.3-3L1 5.5l3.2-1.5Z" fill="currentColor"/></svg>
+        Parse with AI
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+const streams    = new Map();
+let streamSeq    = 0;
+const netStreams  = new Map();
+let netStreamSeq = 0;
+
+let scanning    = false;
+let sapActive   = false;
+let rotating    = false;
+let netScanning = false;
+let mdnsActive  = false;
+let rotIdx      = 0;
+let rotTimer    = null;
+let rotList     = [];
+let env         = {};
+let scanIface   = '';   // NIC addr captured at range-scan start
+let sapIface    = '';   // NIC addr captured at SAP-listen start
+let netIface    = '';   // NIC addr captured at net-scan start
+
+const NAME_KEY   = 'mcast_names_v2';
+const APIKEY_KEY = 'mcast_apikey';
+let   nameStore  = {};
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  loadNames();
+  try {
+    env = await window.api.getEnv();
+    populateNics(env.nics);
+    updateBadges();
+    bindEvents();
+    // Auto-populate subnet from first local subnet
+    if (env.localSubnets && env.localSubnets.length > 0) {
+      document.getElementById('nSubnet').value = env.localSubnets[0].network;
+    }
+  } catch { env = { platform: 'unknown', nics: [], localSubnets: [] }; }
+  const saved = localStorage.getItem(APIKEY_KEY);
+  if (saved) document.getElementById('apiKey').value = saved;
+});
+
+function bindEvents() {
+  window.api.onScanResult(onScanResult);
+  window.api.onScanDone(onScanDone);
+  window.api.onSapAnnounce(onSapAnnounce);
+  window.api.onSapReady(() => log('info', 'SAP listener active on 224.2.127.254:9875'));
+  window.api.onSapError(d => { log('err', 'SAP: ' + d.message); stopSap(); });
+  window.api.onNetScanResult(onNetScanResult);
+  window.api.onNetScanProgress(onNetScanProgress);
+  window.api.onNetScanDone(onNetScanDone);
+  window.api.onMdnsAnnounce(onMdnsAnnounce);
+  window.api.onMdnsReady(() => log('info', 'mDNS listener active on 224.0.0.251:5353'));
+  window.api.onMdnsError(d => { log('err', 'mDNS: ' + d.message); stopMdns(); });
+}
+
+let nicNameByAddr = {};   // "192.168.1.50" → "eth0", for VLC --miface
+function populateNics(nics) {
+  nicNameByAddr = {};
+  (nics||[]).forEach(n => { nicNameByAddr[n.address] = n.name; });
+  ['rNic','sNic','nNic'].forEach(id => {
+    const sel = document.getElementById(id);
+    (nics||[]).forEach(n => {
+      const o = document.createElement('option');
+      o.value = n.address;
+      o.textContent = n.name + '  (' + n.address + ')';
+      sel.appendChild(o);
+    });
+  });
+}
+
+// Map a NIC IP address (what the dropdowns store) to the interface NAME that
+// VLC's --miface option expects. Returns null if unknown / Auto.
+function mifaceFor(ifaceAddr) {
+  if (!ifaceAddr) return null;
+  return nicNameByAddr[ifaceAddr] || null;
+}
+
+function updateBadges() {
+  const fp = document.getElementById('bFfprobe'), vb = document.getElementById('bVlc');
+  if (env.ffprobeFound || env.ffprobe) { fp.textContent='ffprobe ✓'; fp.className='badge ok'; }
+  else { fp.textContent='ffprobe: install ffmpeg'; fp.className='badge warn'; }
+  if (env.vlcFound || env.vlc) { vb.textContent='vlc ✓'; vb.className='badge ok'; }
+  else { vb.textContent='vlc: not found'; vb.className='badge warn'; }
+  document.getElementById('sbEnv').textContent = (env.ffprobe||'?') + '  |  ' + (env.vlc||'?');
+}
+
+// ── Name persistence ──────────────────────────────────────────────────────────
+function loadNames() {
+  try { const d = localStorage.getItem(NAME_KEY); if (d) nameStore = JSON.parse(d); } catch {}
+}
+function saveNames() {
+  try { localStorage.setItem(NAME_KEY, JSON.stringify(nameStore)); } catch {}
+}
+function nameKey(s) { return s.ip + ':' + s.port; }
+
+// ── Mode ──────────────────────────────────────────────────────────────────────
+function setMode(m) {
+  const isRange = m === 'range', isSap = m === 'sap', isNet = m === 'net';
+  document.getElementById('rangeConfig').style.display = isRange ? 'flex' : 'none';
+  document.getElementById('sapConfig').style.display   = isSap   ? 'flex' : 'none';
+  document.getElementById('netConfig').style.display   = isNet   ? 'flex' : 'none';
+  document.getElementById('tabRange').className = 'dtab' + (isRange ? ' active' : '');
+  document.getElementById('tabSap').className   = 'dtab' + (isSap   ? ' active' : '');
+  document.getElementById('tabNet').className   = 'dtab' + (isNet   ? ' active' : '');
+
+  // Show/hide grids and toolbars
+  document.getElementById('castArea').style.display    = isNet ? 'none' : '';
+  document.getElementById('netArea').style.display     = isNet ? ''     : 'none';
+  document.getElementById('resultsTb').style.display   = (!isNet && streams.size > 0) ? 'flex' : 'none';
+  document.getElementById('netResultsTb').style.display = (isNet && netStreams.size > 0) ? 'flex' : 'none';
+  document.getElementById('netProgBar').style.display  = (isNet && netScanning) ? 'flex' : 'none';
+  document.getElementById('progBar').style.display     = (!isNet && scanning) ? 'flex' : 'none';
+}
+
+// ── Range Scan ────────────────────────────────────────────────────────────────
+async function toggleScan() {
+  if (scanning) { stopScan(); return; }
+  for (const id of ['oct1','oct2','oct3']) {
+    const val = parseInt(document.getElementById(id).value);
+    if (isNaN(val)||val<0||val>255) { log('warn','Invalid IP octet — must be 0-255'); return; }
+  }
+  const prefix=v('oct1')+'.'+v('oct2')+'.'+v('oct3');
+  const start=n('rStart'), end=n('rEnd'), port=n('rPort');
+  if (isNaN(start)||isNaN(end)) { log('warn','Start/end must be numbers'); return; }
+  if (start>end) { log('warn','Start must be <= end'); return; }
+  if (end-start>253) { log('warn','Max 254 addresses per scan'); return; }
+  if (port<1||port>65535) { log('warn','Port must be 1-65535'); return; }
+  scanning=true;
+  document.getElementById('scanBtn').textContent='■ Scanning…';
+  document.getElementById('progBar').style.display='flex';
+  document.getElementById('progFill').style.width='0%';
+  setStatus(true,'Scanning '+prefix+'.'+start+'–'+end+':'+port);
+  log('info','Scan: '+prefix+'.'+start+' → '+prefix+'.'+end+':'+port+
+    ' · '+(end-start+1)+' addrs · '+n('rConc')+' concurrent · '+n('rTimeout')+'s timeout');
+  scanIface = v('rNic');
+  try {
+    await window.api.startScan({prefix,start,end,port,iface:scanIface,concurrency:n('rConc'),probeSecs:n('rTimeout')});
+  } catch { onScanDone({total:0,completed:0,found:0,cancelled:true}); }
+}
+
+function stopScan() { try { window.api.stopScan(); } catch {} }
+
+function onScanResult(d) {
+  const {ip,port,url,result,progress} = d;
+  const pct=Math.round((progress.completed/progress.total)*100);
+  document.getElementById('progFill').style.width=pct+'%';
+  document.getElementById('progStats').textContent=progress.completed+' / '+progress.total+' ('+pct+'%)';
+  document.getElementById('progFound').textContent=progress.found?'● '+progress.found+' live':'';
+  if (result.ok) upsertStream({key:ip+':'+port,ip,port,url,source:'scan',result,seq:streamSeq++,iface:scanIface});
+  else if (result.error==='not_found'&&!window._ffWarn) {
+    window._ffWarn=true;
+    log('warn','ffprobe not found — install ffmpeg and ensure it is in PATH');
+  }
+}
+
+function onScanDone(d) {
+  scanning=false;
+  document.getElementById('scanBtn').innerHTML=
+    '<svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 2.5v3.5l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Scan Network';
+  document.getElementById('progBar').style.display='none';
+  const msg=d.cancelled?'Scan stopped — ':'Scan complete — ';
+  setStatus(false,msg+d.found+' live found of '+d.total+' probed');
+  log('ok',msg+d.found+' live / '+(d.total-d.found)+' no signal / '+d.total+' total');
+  updateResultsTb();
+}
+
+// ── SAP ───────────────────────────────────────────────────────────────────────
+async function toggleSap() {
+  if (sapActive) { stopSap(); return; }
+  sapActive=true;
+  document.getElementById('sapBtn').textContent='■ Stop Listening';
+  document.getElementById('sapHint').style.display='block';
+  setStatus(true,'SAP listener active…');
+  sapIface = v('sNic');
+  log('info','Starting SAP listener'+(sapIface?' on '+sapIface:''));
+  try { await window.api.startSap(sapIface||null); } catch { stopSap(); }
+}
+
+function stopSap() {
+  sapActive=false;
+  try { window.api.stopSap(); } catch {}
+  document.getElementById('sapBtn').innerHTML=
+    '<svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="1.8" fill="currentColor"/><circle cx="5.5" cy="5.5" r="3.5" stroke="currentColor" stroke-width=".9" stroke-dasharray="1.5 1.5"/><circle cx="5.5" cy="5.5" r="5" stroke="currentColor" stroke-width=".7" opacity=".4"/></svg> Start Listening';
+  document.getElementById('sapHint').style.display='none';
+  setStatus(false,'SAP listener stopped');
+}
+
+async function onSapAnnounce(d) {
+  if (!d.address||!d.port) return;
+  const key='sap:'+d.address+':'+d.port;
+  const url='udp://@'+d.address+':'+d.port;
+  log('info','SAP: "'+(d.name||key)+'" → '+url);
+  if (streams.has(key)) return;
+  const nk=d.address+':'+d.port;
+  if (d.name && !nameStore[nk]) { nameStore[nk]=d.name; saveNames(); }
+  upsertStream({key,ip:d.address,port:d.port,url,source:'sap',result:{probing:true},seq:streamSeq++,iface:sapIface});
+  let result;
+  try { result=await window.api.probeStream(url); } catch { result={error:'api_unavailable'}; }
+  upsertStream({key,ip:d.address,port:d.port,url,source:'sap',result,seq:streams.get(key)?.seq??streamSeq++,iface:sapIface});
+  updateResultsTb();
+  if (result.ok) log('ok','SAP probe OK: '+d.address+':'+d.port+(d.name?' "'+d.name+'"':''));
+  else log('warn','SAP: no signal on '+d.address+':'+d.port);
+}
+
+// ── Network Discovery Scan ────────────────────────────────────────────────────
+async function toggleNetScan() {
+  if (netScanning) { stopNetScan(); return; }
+  const subnet = v('nSubnet');
+  if (!subnet || subnet.split('.').length < 3) { log('warn','Enter a valid subnet prefix, e.g. 192.168.1'); return; }
+
+  const protocols = [];
+  if (document.getElementById('pRtsp').checked) protocols.push('rtsp');
+  if (document.getElementById('pRtmp').checked) protocols.push('rtmp');
+  if (document.getElementById('pHls').checked)  protocols.push('hls');
+  if (document.getElementById('pUdp').checked)  protocols.push('udp');
+
+  if (!protocols.length) { log('warn','Select at least one protocol'); return; }
+
+  netScanning = true;
+  netIface = v('nNic');
+  document.getElementById('netScanBtn').textContent = '■ Scanning…';
+  document.getElementById('netProgBar').style.display = 'flex';
+  document.getElementById('netProgFill').style.width = '0%';
+  setStatus(true, 'Net scan: ' + subnet + '.1–254');
+  log('info', 'Net scan: ' + subnet + '.1–254 · protocols: ' + protocols.join(', ') + ' · ' + n('nConc') + ' concurrent');
+
+  try {
+    await window.api.startNetScan({
+      subnet,
+      protocols,
+      concurrency: n('nConc'),
+      probeSecs: n('nTimeout'),
+      udpPort: n('nUdpPort'),
+    });
+  } catch { onNetScanDone({total:254,completed:0,found:0,cancelled:true}); }
+}
+
+function stopNetScan() { try { window.api.stopNetScan(); } catch {} }
+
+function onNetScanResult(d) {
+  const { ip, port, url, protocol, result } = d;
+  const key = 'net:' + protocol + ':' + ip + ':' + port;
+  log('ok', 'Found ' + protocol.toUpperCase() + ': ' + url);
+  upsertNetStream({ key, ip, port, url, protocol, source: 'net', result, seq: netStreamSeq++, iface: netIface });
+}
+
+function onNetScanProgress(d) {
+  const pct = Math.round((d.completed / d.total) * 100);
+  document.getElementById('netProgFill').style.width = pct + '%';
+  document.getElementById('netProgStats').textContent = d.completed + ' / ' + d.total + ' (' + pct + '%)';
+  document.getElementById('netProgFound').textContent = d.found ? '● ' + d.found + ' found' : '';
+}
+
+function onNetScanDone(d) {
+  netScanning = false;
+  document.getElementById('netScanBtn').innerHTML =
+    '<svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 2.5v3.5l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Scan';
+  document.getElementById('netProgBar').style.display = 'none';
+  const msg = d.cancelled ? 'Net scan stopped — ' : 'Net scan complete — ';
+  setStatus(false, msg + d.found + ' streams found of ' + d.total + ' hosts');
+  log('ok', msg + d.found + ' found / ' + d.total + ' total');
+  updateNetResultsTb();
+}
+
+// ── mDNS ──────────────────────────────────────────────────────────────────────
+async function toggleMdns() {
+  if (mdnsActive) { stopMdns(); return; }
+  mdnsActive = true;
+  document.getElementById('mdnsBtn').textContent = '■ Stop mDNS';
+  setStatus(true, 'mDNS listener active…');
+  log('info', 'Starting mDNS listener');
+  try { await window.api.startMdns(); } catch { stopMdns(); }
+}
+
+function stopMdns() {
+  mdnsActive = false;
+  try { window.api.stopMdns(); } catch {}
+  document.getElementById('mdnsBtn').innerHTML =
+    '<svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="1.8" fill="currentColor"/><circle cx="5.5" cy="5.5" r="3.5" stroke="currentColor" stroke-width=".9" stroke-dasharray="1.5 1.5"/><circle cx="5.5" cy="5.5" r="5" stroke="currentColor" stroke-width=".7" opacity=".4"/></svg> mDNS Listen';
+  setStatus(false, 'mDNS listener stopped');
+}
+
+function onMdnsAnnounce(d) {
+  const key = 'mdns:' + d.protocol + ':' + d.ip + ':' + d.port;
+  if (netStreams.has(key)) return;
+  log('info', 'mDNS: ' + d.protocol.toUpperCase() + ' "' + d.name + '" → ' + (d.host || d.ip) + ':' + d.port);
+  // Discovered devices (NDI/Dante/AES67/Ravenna) are NOT ffprobe/VLC-playable
+  // URL streams — record them as discovered endpoints, never auto-probe.
+  const isDevice = d.kind === 'device';
+  upsertNetStream({
+    key, ip: d.ip, port: d.port, url: d.url, protocol: d.protocol,
+    source: 'mdns', kind: isDevice ? 'device' : 'stream',
+    result: isDevice ? { device: true } : { probing: true },
+    seq: netStreamSeq++, mdnsName: d.name, host: d.host || null,
+  });
+  if (isDevice) return; // no probe — needs SDK/AoIP receiver, not ffprobe
+  window.api.probeStream(d.url).then(result => {
+    const s = netStreams.get(key);
+    if (s) { s.result = result; renderNetCard(s); }
+    updateNetResultsTb();
+    if (result.ok) log('ok', 'mDNS probe OK: ' + d.url);
+  }).catch(() => {});
+}
+
+// ── Stream stores ─────────────────────────────────────────────────────────────
+function upsertStream(s) {
+  streams.set(s.key, s);
+  renderCard(s);
+  document.getElementById('guide').style.display = 'none';
+  document.getElementById('grid').style.display = '';
+  updateResultsTb();
+}
+
+function upsertNetStream(s) {
+  netStreams.set(s.key, s);
+  renderNetCard(s);
+  document.getElementById('netGuide').style.display = 'none';
+  document.getElementById('netGrid').style.display = '';
+  updateNetResultsTb();
+}
+
+function updateResultsTb() {
+  const live = [...streams.values()].filter(s => s.result && s.result.ok).length;
+  if (streams.size > 0) {
+    // Only show if we're on a non-net tab
+    const isNet = document.getElementById('tabNet').classList.contains('active');
+    if (!isNet) document.getElementById('resultsTb').style.display = 'flex';
+    document.getElementById('liveCount').textContent = live + ' live  /  ' + streams.size + ' total';
+  }
+}
+
+function updateNetResultsTb() {
+  const live = [...netStreams.values()].filter(s => s.result && s.result.ok).length;
+  if (netStreams.size > 0) {
+    const isNet = document.getElementById('tabNet').classList.contains('active');
+    if (isNet) document.getElementById('netResultsTb').style.display = 'flex';
+    document.getElementById('netLiveCount').textContent = live + ' live  /  ' + netStreams.size + ' total';
+  }
+}
+
+// ── ffprobe parse ─────────────────────────────────────────────────────────────
+const CC_CODECS = new Set(['eia_608','eia_608_line21','eia_708','dvb_subtitle','dvb_teletext',
+  'hdmv_pgs_subtitle','mov_text','subrip','webvtt','cea_708','cc']);
+
+function ccLabel(s) {
+  const cn = (s.codec_name || '').toLowerCase();
+  const lang = s.tags?.language || '';
+  const langSuffix = lang ? '/' + lang.toUpperCase() : '';
+  if (cn.includes('608')) return 'CC608' + langSuffix;
+  if (cn.includes('708') || cn.includes('cea_708')) return 'CC708' + langSuffix;
+  if (cn.includes('dvb_sub')) return 'DVB' + langSuffix;
+  if (cn.includes('dvb_tele')) return 'Teletext' + langSuffix;
+  if (cn.includes('pgs')) return 'PGS' + langSuffix;
+  if (cn === 'subrip') return 'SRT' + langSuffix;
+  if (cn === 'webvtt') return 'VTT' + langSuffix;
+  if (cn === 'mov_text') return 'MOV_TXT' + langSuffix;
+  return (cn || 'CC').toUpperCase() + langSuffix;
+}
+
+function parseProbe(raw) {
+  if (!raw) return null;
+  const st = raw.streams || [];
+  let video = null, audio = null;
+  const captions = [];
+
+  for (const s of st) {
+    if (s.codec_type === 'video' && !video) {
+      video = {
+        codec: (s.codec_name || '').toUpperCase() || null,
+        res: (s.width && s.height) ? s.width + 'x' + s.height : null,
+        fps: parseFps(s.r_frame_rate || s.avg_frame_rate),
+        br: s.bit_rate ? fmt(+s.bit_rate) : (raw.format?.bit_rate ? fmt(+raw.format.bit_rate) : null),
+      };
+    }
+    if (s.codec_type === 'audio' && !audio) {
+      audio = {
+        codec: (s.codec_name || '').toUpperCase() || null,
+        sr: s.sample_rate ? s.sample_rate + ' Hz' : null,
+        ch: s.channels == 2 ? 'Stereo' : s.channels == 1 ? 'Mono' : (s.channels ? s.channels + 'ch' : null),
+        br: s.bit_rate ? fmt(+s.bit_rate) : null,
+      };
+    }
+    // Captions / subtitle / data tracks
+    const cn = (s.codec_name || '').toLowerCase();
+    if (s.codec_type === 'subtitle' || s.codec_type === 'data' || CC_CODECS.has(cn)) {
+      captions.push({ codec: s.codec_name || '', lang: s.tags?.language || '', label: ccLabel(s) });
+    }
+  }
+
+  // Suggested name from programs/format tags
+  let suggestedName = null;
+  const progs = raw.programs || [];
+  const candidates = [
+    progs[0]?.tags?.service_name,
+    progs[0]?.tags?.name,
+    raw.format?.tags?.service_name,
+    raw.format?.tags?.title,
+    raw.format?.tags?.StreamTitle,
+  ];
+  for (const c of candidates) {
+    if (c && c.trim()) { suggestedName = c.trim(); break; }
+  }
+
+  return (video || audio || captions.length || suggestedName) ? { video, audio, captions, suggestedName } : null;
+}
+
+function parseFps(str){if(!str||str==='0/0')return null;const[a,b]=str.split('/').map(Number);if(!b)return null;const f=a/b;return f>0?f.toFixed(2).replace(/\.00$/,'')+' fps':null;}
+function fmt(bps){if(!bps||bps<=0)return null;if(bps>=1e6)return(bps/1e6).toFixed(1)+' Mbps';if(bps>=1e3)return Math.round(bps/1e3)+' kbps';return bps+' bps';}
+
+// ── Metadata render ───────────────────────────────────────────────────────────
+function renderMeta(m) {
+  if (!m) return '';
+  let html = '<div class="meta">';
+  if (m.video) {
+    const vd = m.video;
+    html += '<div class="meta-row">';
+    if (vd.codec) html += '<span class="meta-pill">' + esc(vd.codec) + '</span>';
+    if (vd.res)   html += '<span class="meta-pill">' + esc(vd.res) + '</span>';
+    if (vd.fps)   html += '<span class="meta-pill">' + esc(vd.fps) + '</span>';
+    if (vd.br)    html += '<span class="meta-val hi" style="margin-left:2px">' + esc(vd.br) + '</span>';
+    html += '</div>';
+  }
+  if (m.audio) {
+    const au = m.audio;
+    html += '<div class="meta-row" style="margin-top:2px">';
+    if (au.codec) html += '<span class="meta-pill" style="opacity:.7">' + esc(au.codec) + '</span>';
+    if (au.sr)    html += '<span class="meta-pill" style="opacity:.7">' + esc(au.sr) + '</span>';
+    if (au.ch)    html += '<span class="meta-pill" style="opacity:.7">' + esc(au.ch) + '</span>';
+    if (au.br)    html += '<span class="meta-val dim" style="margin-left:2px">' + esc(au.br) + '</span>';
+    html += '</div>';
+  }
+  if (m.captions && m.captions.length > 0) {
+    html += '<div class="meta-row" style="margin-top:2px">';
+    const shown = m.captions.slice(0, 3);
+    for (const cc of shown) html += '<span class="cc-pill">' + esc(cc.label) + '</span>';
+    if (m.captions.length > 3) html += '<span class="cc-pill">+' + (m.captions.length - 3) + ' more</span>';
+    html += '</div>';
+  }
+  if (m.suggestedName) {
+    html += '<div class="meta-suggested">' + esc(m.suggestedName) + '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// ── Card render (multicast) ───────────────────────────────────────────────────
+function renderCard(s) {
+  const cid = 'c-' + s.key.replace(/[:.]/g, '_');
+  let card = document.getElementById(cid);
+  if (!card) { card = document.createElement('div'); card.id = cid; document.getElementById('grid').appendChild(card); }
+
+  const r = s.result || {};
+  const isLive = r.ok, isNosig = r.error && r.error !== 'not_found', isProbing = r.probing;
+  const stCls = isLive ? 'live' : isNosig ? 'nosig' : isProbing ? 'probing' : '';
+  const srcCls = s.source === 'sap' ? 'sap-card' : '';
+  let dotCls = '', lblCls = '', lblTxt = 'Idle';
+  if (isLive)    { dotCls = 'live';    lblCls = 'live';    lblTxt = 'LIVE'; }
+  else if (isNosig)  { dotCls = 'nosig';   lblCls = 'nosig';   lblTxt = 'NO SIG'; }
+  else if (isProbing){ dotCls = 'probing'; lblCls = 'probing'; lblTxt = 'PROBING'; }
+
+  const meta = isLive ? parseProbe(r.raw) : null;
+  const oct = s.ip.split('.'), last = oct.pop(), pre = oct.join('.');
+  const nk = nameKey(s);
+  const name = nameStore[nk] || '';
+
+  // If no name set and there's a suggested name from metadata, use that as placeholder
+  const hasSuggested = !name && meta && meta.suggestedName;
+  const displayName = name || (hasSuggested ? meta.suggestedName : '');
+  const nameCls = 'ch-name' + (name ? '' : (hasSuggested ? ' empty meta-suggested' : ' empty'));
+  const nameAttr = hasSuggested && !name ? (' placeholder="' + esc(meta.suggestedName) + '"') : '';
+
+  card.className = 'card ' + [stCls, srcCls].filter(Boolean).join(' ');
+  card.innerHTML =
+    '<div class="card-inner">' +
+    '<div class="ch">' +
+      '<div class="ch-left">' +
+        '<span class="ch-num">CH' + String(s.seq + 1).padStart(3, '0') + '</span>' +
+        '<span class="src-badge ' + s.source + '">' + s.source.toUpperCase() + '</span>' +
+      '</div>' +
+      '<div class="status-pill">' +
+        '<div class="sdot ' + dotCls + '"></div>' +
+        '<span class="slabel ' + lblCls + '">' + lblTxt + '</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="ch-name-wrap">' +
+      '<div class="' + nameCls + '" ' +
+        'contenteditable="true" ' +
+        'data-nk="' + esc(nk) + '" ' +
+        'onfocus="nameFocus(this)" ' +
+        'onblur="nameBlur(this)" ' +
+        'onkeydown="nameKey(event,this)" ' +
+        'title="Click to set channel name">' +
+        esc(displayName || 'Add channel name…') +
+      '</div>' +
+    '</div>' +
+    '<div class="ch-addr"><span>' + pre + '.</span>' + last + '<span>:' + s.port + '</span></div>' +
+    '<div class="ch-url">udp://@' + s.ip + ':' + s.port + '</div>' +
+    (isProbing ? '<div class="meta-probing"><div class="spin"></div><span>Probing with ffprobe…</span></div>' : '') +
+    (isNosig && !isProbing ? '<div class="meta-nosig">✕ No signal' + (r.error === 'timeout' ? ' · timed out' : '') + ' </div>' : '') +
+    (meta ? renderMeta(meta) : '') +
+    '<div class="ca">' +
+      '<button class="cab launch" onclick="launchOne(\'' + esc(s.url) + '\',\'' + esc(s.iface||'') + '\')">' +
+        '<svg viewBox="0 0 9 9" fill="none"><polygon points="0.5,0.5 8.5,4.5 0.5,8.5" fill="currentColor"/></svg>' +
+        'Launch VLC' +
+      '</button>' +
+      '<button class="cab" onclick="reProbe(\'' + esc(s.key) + '\')">' +
+        '<svg viewBox="0 0 9 9" fill="none"><path d="M7.5 4.5A3 3 0 1 1 4.5 1.5M7.5 1.5v3H4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+        'Re-probe' +
+      '</button>' +
+      '<button class="cab" onclick="copyOne(\'' + esc(s.url) + '\')">' +
+        '<svg viewBox="0 0 9 9" fill="none"><rect x=".5" y="2.5" width="5" height="6" rx=".6" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 2.5V2a.6.6 0 0 1 .6-.6h4.3a.6.6 0 0 1 .6.6v5a.6.6 0 0 1-.6.6H7" stroke="currentColor" stroke-width="1.1"/></svg>' +
+        'Copy' +
+      '</button>' +
+    '</div>' +
+    '</div>';
+}
+
+// ── Net card render ───────────────────────────────────────────────────────────
+function renderNetCard(s) {
+  const cid = 'nc-' + s.key.replace(/[:.]/g, '_');
+  let card = document.getElementById(cid);
+  if (!card) { card = document.createElement('div'); card.id = cid; document.getElementById('netGrid').appendChild(card); }
+
+  const r = s.result || {};
+  const isDevice = s.kind === 'device' || r.device;
+  const isLive = r.ok, isNosig = r.error && r.error !== 'not_found', isProbing = r.probing;
+  const stCls = isDevice ? 'device' : isLive ? 'live' : isNosig ? 'nosig' : isProbing ? 'probing' : '';
+  let dotCls = '', lblCls = '', lblTxt = 'Idle';
+  if (isDevice)      { dotCls = 'device';  lblCls = 'device';  lblTxt = 'DISCOVERED'; }
+  else if (isLive)   { dotCls = 'live';    lblCls = 'live';    lblTxt = 'LIVE'; }
+  else if (isNosig)  { dotCls = 'nosig';   lblCls = 'nosig';   lblTxt = 'NO SIG'; }
+  else if (isProbing){ dotCls = 'probing'; lblCls = 'probing'; lblTxt = 'PROBING'; }
+
+  const meta = isLive ? parseProbe(r.raw) : null;
+  const proto = (s.protocol || 'udp').toLowerCase();
+  const nk = s.ip + ':' + s.port;
+  const hasSuggested = !nameStore[nk] && meta && meta.suggestedName;
+  const displayName = nameStore[nk] || (hasSuggested ? meta.suggestedName : s.mdnsName || '');
+  const nameCls = 'ch-name' + (nameStore[nk] ? '' : (hasSuggested || s.mdnsName ? ' empty meta-suggested' : ' empty'));
+
+  // Device endpoints (NDI / Dante / AES67) aren't URL streams — show what they
+  // need rather than fake metadata or a non-working VLC launch.
+  // What software can actually receive each device type (guidance only — the
+  // app does not bundle or install any of these).
+  const VIEWERS = {
+    ndi:     'NDI Tools (Win/Mac) or OBS + DistroAV',
+    dante:   'Dante Controller / a Dante-enabled device',
+    aes67:   'an AES67 receiver',
+    ravenna: 'a Ravenna/AES67 receiver',
+  };
+
+  let body, actions;
+  if (isDevice) {
+    body =
+      '<div class="ch-url" style="font-size:11px;color:var(--text)">' + esc(s.url) + '</div>' +
+      (s.host ? '<div class="meta-suggested">host: ' + esc(s.host) + '  ·  ' + esc(s.ip) + ':' + s.port + '</div>' : '') +
+      '<div class="meta-device">◆ Discovered ' + proto.toUpperCase() + ' device — not a URL stream.<br>' +
+        'View with ' + esc(VIEWERS[proto] || 'a dedicated receiver') + '.</div>';
+    actions =
+      '<button class="cab" onclick="copyOne(\'' + esc(s.url) + '\')">' +
+        '<svg viewBox="0 0 9 9" fill="none"><rect x=".5" y="2.5" width="5" height="6" rx=".6" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 2.5V2a.6.6 0 0 1 .6-.6h4.3a.6.6 0 0 1 .6.6v5a.6.6 0 0 1-.6.6H7" stroke="currentColor" stroke-width="1.1"/></svg>Copy</button>';
+  } else {
+    body =
+      '<div class="ch-url" style="font-size:11px;color:var(--text)">' + esc(s.url) + '</div>' +
+      (isProbing ? '<div class="meta-probing"><div class="spin"></div><span>Probing with ffprobe…</span></div>' : '') +
+      (isNosig && !isProbing ? '<div class="meta-nosig">✕ No signal' + (r.error === 'timeout' ? ' · timed out' : '') + ' </div>' : '') +
+      (meta ? renderMeta(meta) : '');
+    actions =
+      '<button class="cab launch" onclick="launchOne(\'' + esc(s.url) + '\',\'' + esc(s.iface||'') + '\')">' +
+        '<svg viewBox="0 0 9 9" fill="none"><polygon points="0.5,0.5 8.5,4.5 0.5,8.5" fill="currentColor"/></svg>Launch VLC</button>' +
+      '<button class="cab" onclick="reProbeNet(\'' + esc(s.key) + '\')">' +
+        '<svg viewBox="0 0 9 9" fill="none"><path d="M7.5 4.5A3 3 0 1 1 4.5 1.5M7.5 1.5v3H4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Re-probe</button>' +
+      '<button class="cab" onclick="copyOne(\'' + esc(s.url) + '\')">' +
+        '<svg viewBox="0 0 9 9" fill="none"><rect x=".5" y="2.5" width="5" height="6" rx=".6" stroke="currentColor" stroke-width="1.1"/><path d="M2.5 2.5V2a.6.6 0 0 1 .6-.6h4.3a.6.6 0 0 1 .6.6v5a.6.6 0 0 1-.6.6H7" stroke="currentColor" stroke-width="1.1"/></svg>Copy</button>';
+  }
+
+  card.className = 'card net-card ' + stCls;
+  card.innerHTML =
+    '<div class="card-inner">' +
+    '<div class="ch">' +
+      '<div class="ch-left">' +
+        '<span class="ch-num">N' + String(s.seq + 1).padStart(3, '0') + '</span>' +
+        '<span class="proto-badge ' + proto + '">' + proto.toUpperCase() + '</span>' +
+        '<span class="src-badge ' + s.source + '">' + s.source.toUpperCase() + '</span>' +
+      '</div>' +
+      '<div class="status-pill">' +
+        '<div class="sdot ' + dotCls + '"></div>' +
+        '<span class="slabel ' + lblCls + '">' + lblTxt + '</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="ch-name-wrap">' +
+      '<div class="' + nameCls + '" ' +
+        'contenteditable="true" ' +
+        'data-nk="' + esc(nk) + '" ' +
+        'onfocus="nameFocus(this)" ' +
+        'onblur="nameBlur(this)" ' +
+        'onkeydown="nameKey(event,this)" ' +
+        'title="Click to set channel name">' +
+        esc(displayName || 'Add channel name…') +
+      '</div>' +
+    '</div>' +
+    body +
+    '<div class="ca">' + actions + '</div>' +
+    '</div>';
+}
+
+// ── Name editing ──────────────────────────────────────────────────────────────
+function nameFocus(el) {
+  if (el.classList.contains('empty')) { el.textContent = ''; el.classList.remove('empty'); el.classList.remove('meta-suggested'); }
+  const range = document.createRange(); range.selectNodeContents(el);
+  const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+}
+
+function nameBlur(el) {
+  const nk = el.dataset.nk;
+  const text = el.textContent.trim();
+  if (!text || text === 'Add channel name…') {
+    delete nameStore[nk];
+    el.textContent = 'Add channel name…';
+    el.classList.add('empty');
+  } else {
+    nameStore[nk] = text;
+    el.classList.remove('empty');
+    el.classList.remove('meta-suggested');
+    log('ok', 'Named ' + nk + ': "' + text + '"');
+  }
+  saveNames();
+}
+
+function nameKey(e, el) {
+  if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  if (e.key === 'Escape') { e.preventDefault(); el.textContent = nameStore[el.dataset.nk] || ''; el.blur(); }
+}
+
+// ── Re-probe ──────────────────────────────────────────────────────────────────
+async function reProbe(key) {
+  const s = streams.get(key); if (!s) return;
+  s.result = { probing: true }; renderCard(s);
+  log('info', 'Re-probing ' + s.url);
+  let r; try { r = await window.api.probeStream(s.url); } catch { r = { error: 'api_unavailable' }; }
+  s.result = r; renderCard(s); updateResultsTb();
+  if (r.ok) log('ok', 'Re-probe OK: ' + s.ip);
+  else log('warn', 'Re-probe: no signal on ' + s.ip);
+}
+
+async function reProbeNet(key) {
+  const s = netStreams.get(key); if (!s) return;
+  s.result = { probing: true }; renderNetCard(s);
+  log('info', 'Re-probing ' + s.url);
+  let r; try { r = await window.api.probeStream(s.url); } catch { r = { error: 'api_unavailable' }; }
+  s.result = r; renderNetCard(s); updateNetResultsTb();
+  if (r.ok) log('ok', 'Re-probe OK: ' + s.url);
+  else log('warn', 'Re-probe: no signal on ' + s.url);
+}
+
+async function probeAll() {
+  const all = [...streams.values()];
+  if (!all.length) { log('warn', 'No streams yet'); return; }
+  log('info', 'Probing all ' + all.length + ' streams…');
+  for (const s of all) await reProbe(s.key);
+  log('ok', 'Probe all complete');
+}
+
+// ── Launch / copy ─────────────────────────────────────────────────────────────
+async function launchOne(url, ifaceAddr) {
+  const miface = mifaceFor(ifaceAddr);
+  const isMulticast = /^(udp|rtp):\/\/@/i.test(url);
+  log('info', 'Launching VLC → ' + url + (miface && isMulticast ? '  [miface ' + miface + ']' : ''));
+  try {
+    const r = await window.api.launchVlc({ url, miface });
+    if (r.error) log('err', 'VLC: ' + r.error);
+    else log('ok', 'VLC launched' + (miface && isMulticast ? ' on ' + miface : ''));
+  } catch { log('warn', 'VLC launch not available'); }
+}
+
+async function copyOne(url) {
+  try { await navigator.clipboard.writeText(url); } catch {}
+  log('info', 'Copied: ' + url);
+}
+
+// ── M3U export ────────────────────────────────────────────────────────────────
+function buildM3U(list, useIpName = true) {
+  let m = '#EXTM3U\r\n';
+  list.forEach((s, i) => {
+    const nk = nameKey(s);
+    const name = nameStore[nk] || (useIpName ? ('CH' + String(i+1).padStart(3,'0') + ' - ' + s.ip + ':' + s.port) : s.url);
+    const meta = parseProbe((s.result && s.result.raw) || null);
+    const info = meta ? [meta.video?.codec, meta.video?.res, meta.video?.fps, meta.video?.br].filter(Boolean).join(' · ') : '';
+    m += '#EXTINF:-1,' + (info ? name + ' [' + info + ']' : name) + '\r\n';
+    // Bind multicast joins to the discovery NIC so VLC plays from the right
+    // interface when the playlist is opened manually.
+    const miface = mifaceFor(s.iface);
+    const isMulticast = /^(udp|rtp):\/\/@/i.test(s.url);
+    if (miface && isMulticast) m += '#EXTVLCOPT:miface=' + miface + '\r\n';
+    m += s.url + '\r\n';
+  });
+  return m;
+}
+function getLive() { return getSorted().filter(s => s.result && s.result.ok); }
+function getSorted() {
+  const arr = [...streams.values()];
+  const sort = v('sortSel');
+  if (sort === 'ip') arr.sort((a, b) => ipNum(a.ip) - ipNum(b.ip));
+  else if (sort === 'bitrate') arr.sort((a, b) => getBr(b) - getBr(a));
+  else if (sort === 'name') arr.sort((a, b) => (nameStore[nameKey(a)] || a.ip).localeCompare(nameStore[nameKey(b)] || b.ip));
+  else arr.sort((a, b) => a.seq - b.seq);
+  return arr;
+}
+function ipNum(ip) { return ip.split('.').reduce((a, o) => (a * 256) + parseInt(o), 0); }
+function getBr(s) { const m = s.result && s.result.ok ? parseProbe(s.result.raw) : null; return m && m.video && m.video.br ? parseFloat(m.video.br) * 1e6 : 0; }
+
+async function openAllVlc() {
+  const live = getLive(); if (!live.length) { log('warn', 'No live streams'); return; }
+  const m = buildM3U(live);
+  const fn = 'multicast_all_' + Date.now() + '.m3u';
+  try {
+    const r = await window.api.saveM3u(m, fn);
+    if (r.ok) { log('ok', 'Saved: ' + r.filePath); log('info', 'Open in VLC — arrow keys to step through channels'); }
+  } catch { log('warn', 'Save dialog unavailable'); }
+}
+
+async function exportM3u() {
+  const live = getLive(); if (!live.length) { log('warn', 'No live streams'); return; }
+  const fn = 'multicast_' + Date.now() + '.m3u';
+  try {
+    const r = await window.api.saveM3u(buildM3U(live), fn);
+    if (r.ok) log('ok', 'Saved: ' + r.filePath);
+  } catch { log('warn', 'Save dialog unavailable'); }
+}
+
+async function exportNetM3u() {
+  const live = [...netStreams.values()].filter(s => s.result && s.result.ok);
+  if (!live.length) { log('warn', 'No live net streams'); return; }
+  const fn = 'net_discovery_' + Date.now() + '.m3u';
+  let m = '#EXTM3U\r\n';
+  live.forEach((s, i) => {
+    const nk = s.ip + ':' + s.port;
+    const name = nameStore[nk] || s.mdnsName || (s.protocol.toUpperCase() + '-' + String(i+1).padStart(3,'0') + ' - ' + s.url);
+    m += '#EXTINF:-1,' + name + '\r\n' + s.url + '\r\n';
+  });
+  try {
+    const r = await window.api.saveM3u(m, fn);
+    if (r.ok) log('ok', 'Saved: ' + r.filePath);
+  } catch { log('warn', 'Save dialog unavailable'); }
+}
+
+// ── AI Import Names ───────────────────────────────────────────────────────────
+function openImport() {
+  document.getElementById('importModal').style.display = 'flex';
+  document.getElementById('importStatus').textContent = '';
+  document.getElementById('importStatus').className = 'modal-status';
+  setTimeout(() => document.getElementById('importData').focus(), 50);
+}
+function closeImport() { document.getElementById('importModal').style.display = 'none'; }
+
+async function parseWithAI() {
+  const raw = document.getElementById('importData').value.trim();
+  const key = document.getElementById('apiKey').value.trim();
+  if (!raw) { setImportStatus('warn', 'Paste some data first'); return; }
+  if (!key) { setImportStatus('warn', 'Enter your Anthropic API key'); return; }
+  localStorage.setItem(APIKEY_KEY, key);
+
+  const btn = document.getElementById('parseBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Parsing…';
+  setImportStatus('info', 'Sending to Claude…');
+
+  const streamList = [...streams.values()].map(s => s.ip + ':' + s.port).join(', ');
+
+  const prompt =
+    'You are parsing a channel list for a multicast AV system. ' +
+    'The operator has these multicast streams configured: ' + streamList + '.\n\n' +
+    'From the pasted data below, extract a human-readable name/label for each stream you can identify. ' +
+    'Match by IP address.\n\n' +
+    'Return ONLY a JSON array. Each object: {"ip": "x.x.x.x", "port": 1234, "name": "Channel Name"}. ' +
+    'Only include entries where you found a name. No extra text, no markdown.\n\n' +
+    'Pasted data:\n' + raw;
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
+    });
+
+    if (resp.status === 401) { setImportStatus('err', 'Invalid API key — check and try again'); return; }
+    if (!resp.ok) { setImportStatus('err', 'API error ' + resp.status); return; }
+
+    const data = await resp.json();
+    const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+    let parsed;
+    try { parsed = JSON.parse(text.replace(/```json|```/g, '').trim()); }
+    catch { setImportStatus('err', 'Could not parse AI response — try cleaner input'); return; }
+
+    if (!Array.isArray(parsed) || !parsed.length) { setImportStatus('warn', 'No names found in pasted data'); return; }
+
+    let updated = 0;
+    for (const entry of parsed) {
+      const ip = (entry.ip || '').trim();
+      const port = parseInt(entry.port) || n('rPort');
+      const name = (entry.name || '').trim();
+      if (!ip || !name) continue;
+      const nk = ip + ':' + port;
+      const exists = [...streams.values()].some(s => s.ip === ip && s.port === port);
+      if (!exists) continue;
+      nameStore[nk] = name;
+      const s = [...streams.values()].find(s => s.ip === ip && s.port === port);
+      if (s) renderCard(s);
+      updated++;
+    }
+    saveNames();
+
+    if (updated > 0) {
+      setImportStatus('ok', '✓ Named ' + updated + ' channel' + (updated !== 1 ? 's' : ''));
+      log('ok', 'AI import: ' + updated + ' channels named');
+      setTimeout(closeImport, 1600);
+    } else {
+      setImportStatus('warn', 'AI found entries but no IPs matched your current streams (' + streamList + ')');
+    }
+  } catch (err) {
+    setImportStatus('err', 'Network error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg viewBox="0 0 11 11" fill="none"><path d="M5.5 1l1.3 3L10 5.5l-3.2 1.5L5.5 10l-1.3-3L1 5.5l3.2-1.5Z" fill="currentColor"/></svg> Parse with AI';
+  }
+}
+function setImportStatus(t, m) { const e = document.getElementById('importStatus'); e.className = 'modal-status ' + t; e.textContent = m; }
+
+// ── Auto-rotate ───────────────────────────────────────────────────────────────
+function toggleRotate() { rotating ? stopRotate() : startRotate(); }
+function startRotate() {
+  rotList = getLive();
+  if (!rotList.length) { log('warn', 'No live streams to rotate'); return; }
+  rotating = true; rotIdx = 0;
+  document.getElementById('rotBtn').textContent = '■ Stop Rotate';
+  document.getElementById('rotBar').style.display = 'flex';
+  log('info', 'Auto-rotate: ' + rotList.length + ' streams, ' + v('dwellSec') + 's dwell');
+  rotStep();
+}
+function rotStep() {
+  if (!rotating) return;
+  if (rotIdx >= rotList.length) { stopRotate(); log('ok', 'Rotation complete — ' + rotList.length + ' channels cycled'); setStatus(false, 'Rotation complete'); return; }
+  const dwell = Math.max(2, parseInt(v('dwellSec')) || 6) * 1000;
+  const s = rotList[rotIdx];
+  const name = nameStore[nameKey(s)] || '';
+  const pct = Math.round((rotIdx / rotList.length) * 100);
+  document.getElementById('rotFill').style.width = pct + '%';
+  document.getElementById('rotStatus').textContent = (rotIdx+1) + '/' + rotList.length + '  →  ' + (name ? '"' + name + '"  ' : '') + s.ip + ':' + s.port;
+  launchOne(s.url, s.iface);
+  rotIdx++;
+  rotTimer = setTimeout(rotStep, dwell);
+}
+function stopRotate() {
+  rotating = false; clearTimeout(rotTimer);
+  document.getElementById('rotBtn').innerHTML = '<svg viewBox="0 0 11 11" fill="none"><path d="M9 5.5A3.5 3.5 0 1 1 5.5 2M9 2v3.5H5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg> Auto-Rotate';
+  document.getElementById('rotBar').style.display = 'none';
+  document.getElementById('rotFill').style.width = '0%';
+}
+
+// ── Clear ─────────────────────────────────────────────────────────────────────
+function clearAll() {
+  streams.clear(); streamSeq = 0; window._ffWarn = false;
+  document.getElementById('grid').innerHTML = '';
+  document.getElementById('grid').style.display = 'none';
+  document.getElementById('guide').style.display = 'flex';
+  document.getElementById('resultsTb').style.display = 'none';
+  setStatus(false, 'Cleared');
+}
+
+function clearNetAll() {
+  netStreams.clear(); netStreamSeq = 0;
+  document.getElementById('netGrid').innerHTML = '';
+  document.getElementById('netGrid').style.display = 'none';
+  document.getElementById('netGuide').style.display = 'flex';
+  document.getElementById('netResultsTb').style.display = 'none';
+  setStatus(false, 'Net results cleared');
+}
+
+function rerenderGrid() {
+  const grid = document.getElementById('grid'); grid.innerHTML = '';
+  getSorted().forEach(s => { const e = document.createElement('div'); grid.appendChild(e); renderCard(s); });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function v(id) { return document.getElementById(id).value.trim(); }
+function n(id) { return parseInt(document.getElementById(id).value); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function setStatus(on, txt) { document.getElementById('sbDot').className = 'sb-dot' + (on ? ' on' : ''); document.getElementById('sbTxt').textContent = txt; }
+function log(type, msg) {
+  document.getElementById('logPanel').style.display = '';
+  const body = document.getElementById('logBody');
+  const ts = new Date().toTimeString().split(' ')[0];
+  const row = document.createElement('div'); row.className = 'lr';
+  row.innerHTML = '<span class="lts">' + ts + '</span><span class="lm ' + type + '">' + msg + '</span>';
+  body.appendChild(row); body.scrollTop = body.scrollHeight;
+}
+function clearLog() { document.getElementById('logBody').innerHTML = ''; }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeImport(); });
+</script>
+</body>
+</html>
