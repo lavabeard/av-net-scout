@@ -1,6 +1,6 @@
 {
   "name": "multicast-ring-analyzer",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "Multicast & network stream scanner — range scan, SAP/mDNS discovery, RTSP/RTMP/HLS/RTP/NDI/Dante, ffprobe metadata with closed-caption detection, VLC launch",
   "main": "main.js",
   "author": {
@@ -51,6 +51,13 @@
       "icon": "assets/icon.png",
       "category": "Network",
       "description": "Discover and probe UDP multicast streams"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6",
+        "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0",
+        "libpcap0.8"
+      ]
     }
   }
 }

@@ -471,6 +471,15 @@ select{color:var(--t2);cursor:pointer}
 
 <!-- MAIN AREA (shared wrapper, tabs show/hide their grid) -->
 <div class="main" id="main">
+  <!-- Consolidated source picker (aggregates every discovery method) -->
+  <div id="allSrcBar" style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--bd);background:var(--bg2)">
+    <span style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.05em;text-transform:uppercase;white-space:nowrap">All Sources <span id="allSrcCount" style="color:var(--text)">0</span></span>
+    <select id="allSourcesSel" onchange="onAllSourceSelect()" style="flex:1;height:26px;font-size:11px;font-family:var(--mono);background:var(--bg3);color:var(--text);border:1px solid var(--bd2);border-radius:4px;padding:0 8px;max-width:680px">
+      <option value="">— no sources discovered yet —</option>
+    </select>
+  </div>
+  <div id="allSrcDetail" style="display:none;padding:12px 14px;border-bottom:1px solid var(--bd);background:var(--bg2)"></div>
+
   <!-- Multicast grid -->
   <div id="castArea">
     <div class="guide" id="guide">
@@ -1111,6 +1120,7 @@ function upsertStream(s) {
   document.getElementById('guide').style.display = 'none';
   document.getElementById('grid').style.display = '';
   updateResultsTb();
+  refreshAllSources();
 }
 
 function upsertNetStream(s) {
@@ -1119,6 +1129,7 @@ function upsertNetStream(s) {
   document.getElementById('netGuide').style.display = 'none';
   document.getElementById('netGrid').style.display = '';
   updateNetResultsTb();
+  refreshAllSources();
 }
 
 function updateResultsTb() {
@@ -1243,6 +1254,116 @@ function renderMeta(m) {
   }
   html += '</div>';
   return html;
+}
+
+// ── Consolidated "All Sources" picker ─────────────────────────────────────────
+let allSourcesIndex = {};   // option id -> source object (reference into streams/netStreams)
+
+const SRC_METHOD = { scan: 'Range Scan', sap: 'SAP', net: 'Net Discovery', mdns: 'mDNS' };
+
+function sourceId(s) { return (s.source || '?') + ':' + (s.key || (s.ip + ':' + s.port)); }
+
+function sourceLabel(s) {
+  const name = nameStore[nameKey(s)] || s.mdnsName || s.name || '';
+  const method = SRC_METHOD[s.source] || s.source || '?';
+  const proto = s.protocol ? '/' + s.protocol.toUpperCase() : '';
+  const dev = (s.kind === 'device') ? ' ·device' : '';
+  const addr = s.url || (s.ip + ':' + s.port);
+  return '[' + method + proto + dev + ']  ' + (name ? name + ' — ' : '') + addr;
+}
+
+function refreshAllSources() {
+  const sel = document.getElementById('allSourcesSel');
+  if (!sel) return;
+  const prev = sel.value;
+  allSourcesIndex = {};
+  const all = [...streams.values(), ...netStreams.values()];
+  all.sort((a, b) => sourceLabel(a).localeCompare(sourceLabel(b)));
+  sel.innerHTML = '<option value="">' +
+    (all.length ? '— select one of ' + all.length + ' discovered source' + (all.length === 1 ? '' : 's') + ' —'
+                : '— no sources discovered yet —') + '</option>';
+  for (const s of all) {
+    const id = sourceId(s);
+    allSourcesIndex[id] = s;
+    const o = document.createElement('option');
+    o.value = id;
+    o.textContent = sourceLabel(s);
+    sel.appendChild(o);
+  }
+  document.getElementById('allSrcCount').textContent = all.length;
+  if (allSourcesIndex[prev]) { sel.value = prev; } // keep selection across refreshes
+  else if (prev) { document.getElementById('allSrcDetail').style.display = 'none'; }
+}
+
+function onAllSourceSelect() {
+  const id = document.getElementById('allSourcesSel').value;
+  const detail = document.getElementById('allSrcDetail');
+  const s = allSourcesIndex[id];
+  if (!s) { detail.style.display = 'none'; detail.innerHTML = ''; return; }
+  detail.style.display = 'block';
+  detail.innerHTML = renderSourceDetail(id, s);
+}
+
+function renderSourceDetail(id, s) {
+  const isDevice = s.kind === 'device';
+  const r = s.result || {};
+  const meta = (r.ok && r.raw) ? parseProbe(r.raw) : null;
+  const name = nameStore[nameKey(s)] || s.mdnsName || s.name || '';
+  const method = SRC_METHOD[s.source] || s.source || '';
+  const addr = s.url || (s.ip + ':' + s.port);
+  const idEsc = esc(id);
+
+  let h = '<div style="display:flex;align-items:flex-start;gap:12px;justify-content:space-between">';
+  h += '<div style="min-width:0">';
+  h += '<div style="font-size:13px;font-weight:600;color:var(--text)">' + esc(name || addr) + '</div>';
+  h += '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-top:2px">' +
+       esc(method) + (s.protocol ? ' · ' + esc(s.protocol.toUpperCase()) : '') + (isDevice ? ' · device' : '') + '</div>';
+  h += '</div>';
+  h += '<div style="display:flex;gap:6px;flex-shrink:0">';
+  if (!isDevice) h += '<button class="btn primary" style="height:26px" onclick="playSource(\'' + idEsc + '\')">▶ Play in VLC</button>';
+  h += '<button class="btn" style="height:26px" onclick="copySource(\'' + idEsc + '\')">Copy URL</button>';
+  if (!isDevice) h += '<button class="btn" style="height:26px" onclick="probeSource(\'' + idEsc + '\')">Probe</button>';
+  h += '</div></div>';
+
+  h += '<div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-top:8px;word-break:break-all">' + esc(addr) + '</div>';
+
+  if (isDevice) {
+    h += '<div style="font-family:var(--mono);font-size:10px;color:var(--purple);margin-top:8px;line-height:1.6">' +
+         'Discovered device — needs its own receiver (NDI Tools, Dante Controller, an AES67 endpoint…), not a directly playable URL.</div>';
+  } else if (meta) {
+    h += '<div style="margin-top:8px">' + renderMeta(meta) + '</div>';
+  } else if (r.probing) {
+    h += '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-top:8px"><span class="spinner"></span> Probing…</div>';
+  } else if (r.ok) {
+    h += '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-top:8px">Live, but no detailed metadata returned.</div>';
+  } else {
+    h += '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-top:8px">Not probed yet — click <b>Probe</b> for resolution, bitrate, audio and closed-captioning.</div>';
+  }
+  return h;
+}
+
+function playSource(id) {
+  const s = allSourcesIndex[id];
+  if (s && s.url) launchOne(s.url, s.iface);
+}
+function copySource(id) {
+  const s = allSourcesIndex[id];
+  if (s) copyOne(s.url || (s.ip + ':' + s.port));
+}
+async function probeSource(id) {
+  const s = allSourcesIndex[id];
+  if (!s || !s.url) return;
+  const detail = document.getElementById('allSrcDetail');
+  s.result = { probing: true };
+  if (document.getElementById('allSourcesSel').value === id) detail.innerHTML = renderSourceDetail(id, s);
+  log('info', 'Probing ' + s.url);
+  let r; try { r = await window.api.probeStream(s.url); } catch { r = { error: 'api_unavailable' }; }
+  s.result = r;
+  if (r.ok) log('ok', 'Probe OK: ' + s.url); else log('warn', 'Probe: no signal on ' + s.url);
+  // Update the underlying card too, then re-render the detail if still selected.
+  if (streams.has(s.key)) renderCard(s); else if (netStreams.has(s.key)) renderNetCard(s);
+  if (document.getElementById('allSourcesSel').value === id) detail.innerHTML = renderSourceDetail(id, s);
+  refreshAllSources();
 }
 
 // ── Card render (multicast) ───────────────────────────────────────────────────
@@ -1666,6 +1787,8 @@ function clearAll() {
   document.getElementById('grid').style.display = 'none';
   document.getElementById('guide').style.display = 'flex';
   document.getElementById('resultsTb').style.display = 'none';
+  document.getElementById('allSrcDetail').style.display = 'none';
+  refreshAllSources();
   setStatus(false, 'Cleared');
 }
 
@@ -1675,6 +1798,8 @@ function clearNetAll() {
   document.getElementById('netGrid').style.display = 'none';
   document.getElementById('netGuide').style.display = 'flex';
   document.getElementById('netResultsTb').style.display = 'none';
+  document.getElementById('allSrcDetail').style.display = 'none';
+  refreshAllSources();
   setStatus(false, 'Net results cleared');
 }
 
