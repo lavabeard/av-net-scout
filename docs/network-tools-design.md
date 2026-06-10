@@ -162,10 +162,19 @@ Electron (unprivileged)  ──spawn pkexec──▶  net-helper.js (root)
 
 ### 5.2 IGMP querier (`raw-socket`)
 - Raw socket, `IPPROTO_IGMP`; set `IP_HDRINCL` or use the addon's header builder.
-- Build **IGMPv2 General Query** (type `0x11`, max-resp-time, checksum, group
-  `0.0.0.0`) to dest `224.0.0.1`, **TTL 1**, with **IP Router Alert** option
-  (`0x94 0x04 0x00 0x00`). v3 query variant behind the version selector.
-- Send every `intervalSecs` (default 125 s; startup burst per robustness var).
+- **Decision: send both general and group-specific queries.**
+- **General Query** (type `0x11`, group `0.0.0.0`) to dest `224.0.0.1`, **TTL 1**,
+  with **IP Router Alert** option (`0x94 0x04 0x00 0x00`). v3 variant behind the
+  version selector. Sent every `intervalSecs` (default 125 s; startup burst per
+  robustness var). This is the membership heartbeat that keeps snooping alive.
+- **Group-Specific Query** (type `0x11`, group = the target group address) sent to
+  that group on **fast-leave**: when a `0x17` Leave is observed for group X, emit a
+  short burst of group-specific queries for X (last-member-query-interval/count)
+  to confirm whether any member remains before the switch prunes it.
+- **Active-group tracking** is fed by the detector's live membership map (§5.3) —
+  the querier reuses the same captured report/leave stream to know which groups
+  exist and which just lost a member. (Querier therefore depends on the detector
+  running in the same helper.)
 - **Querier election:** before sending, run the detector. If another querier is
   seen with a numerically lower source IP, stay silent (it wins). Re-arm if it
   disappears (no queries for ~2× interval). Lab "force" override available.
@@ -261,7 +270,9 @@ so the querier/detector would depend on **Npcap**. Defer until Linux is solid.
   **Resolved: ship a polkit `.policy`** (branded prompt, `auth_admin_keep` caching;
   installed by `install.sh`, with a default-dialog fallback). See §6.
 - DHCP: how much option coverage do AV devices actually need beyond mask/router/DNS?
-- Should the querier also send group-specific queries, or general-only (simpler)?
+- ~~Should the querier also send group-specific queries, or general-only (simpler)?~~
+  **Resolved: both** — general heartbeat + group-specific on fast-leave, driven by
+  the detector's membership/leave stream. See §5.2.
 - ~~Detector via raw `IPPROTO_IGMP` recv (no extra dep) vs libpcap (richer, heavier)?~~
   **Resolved: libpcap promiscuous capture** for full membership visibility (queries
   + every device's reports). See §5.3, §6. Windows will require Npcap (§7).
