@@ -138,11 +138,10 @@ Electron (unprivileged)  ──spawn pkexec──▶  net-helper.js (root)
 ### AppImage specifics
 - The bundled Node isn't on `PATH` as root. The helper is extracted/located via
   `process.resourcesPath`; we invoke `pkexec <bundled-node> <helper>` with an
-  absolute path. Document a fallback that uses system `node` if present.
-- `raw-socket` is a native addon → must be rebuilt for Electron's ABI
-  (`electron-rebuild`) **and** also work under plain Node for the helper. Plan:
-  build the helper to run under **system/bundled Node** (not Electron), so we need
-  a Node-ABI build of `raw-socket`, not an Electron-ABI one. (See §6.)
+  absolute path to the **bundled** Node (no reliance on a system `node`).
+- `raw-socket` is a native addon built **once against the bundled Node's ABI**
+  (not Electron's). The GUI process never loads `raw-socket` — only the helper
+  does — so no `electron-rebuild` of it is required. (See §6.)
 
 ---
 
@@ -186,8 +185,10 @@ Electron (unprivileged)  ──spawn pkexec──▶  net-helper.js (root)
 - New native dependency **`raw-socket`** (node-gyp). DHCP needs none.
 - The privileged helper runs under **Node**, not Electron, to keep elevation off
   the GUI process — so `raw-socket` must be built for the **Node ABI** that runs
-  the helper. Decide: ship a known Node in the AppImage for the helper, or require
-  system Node ≥ 18.
+  the helper. **Decision: bundle a known Node runtime in the AppImage** for the
+  helper (not system Node). `raw-socket` is therefore built once against that
+  bundled Node's ABI — self-contained, no user prerequisite, predictable. Cost:
+  ~30–50 MB larger AppImage; we own bundled-Node updates.
 - CI (`.github/workflows/build.yml`): add a native-build step (`python3`,
   build-essential) for `raw-socket`; verify the helper loads under the target Node
   in the Linux container smoke test.
@@ -234,7 +235,9 @@ so the querier/detector would depend on **Npcap**. Defer until Linux is solid.
 
 ## 10. Open questions
 
-- Bundle a Node runtime for the helper, or require system Node ≥ 18 on Linux?
+- ~~Bundle a Node runtime for the helper, or require system Node ≥ 18 on Linux?~~
+  **Resolved: bundle a known Node runtime in the AppImage** (self-contained;
+  `raw-socket` built once against its ABI). See §4, §6.
 - Ship a polkit policy (smoother prompt) or accept the default `pkexec` dialog?
 - DHCP: how much option coverage do AV devices actually need beyond mask/router/DNS?
 - Should the querier also send group-specific queries, or general-only (simpler)?
