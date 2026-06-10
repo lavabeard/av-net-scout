@@ -42,6 +42,7 @@ function createWindow() {
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+app.on('before-quit', () => stopIgmpHelper());
 
 // ── ffprobe ───────────────────────────────────────────────────────────────────
 function probeUrl(url, timeoutMs) {
@@ -472,6 +473,101 @@ ipcMain.handle('stop-mdns', () => {
   if (mdnsSock) { try { mdnsSock.close(); } catch {} mdnsSock = null; }
   return { ok: true };
 });
+
+// ── IGMP Detector (privileged helper) ───────────────────────────────────────
+// Phase 1 of the Network Tools suite. The capture/raw work runs in a separate
+// root process (scripts/net-helper.js) launched via pkexec on Linux; the GUI
+// stays unprivileged. We relay the helper's line-delimited JSON events to the
+// renderer. See docs/network-tools-design.md.
+let igmpHelper = null;
+
+// Resolve the Node binary that runs the helper. Production bundles its own Node
+// (decision in the design spec); dev uses system node or an AVNS_NODE override.
+function helperNodeBinary() {
+  if (app.isPackaged) {
+    const bundled = path.join(process.resourcesPath, 'node');
+    if (fs.existsSync(bundled)) return bundled;
+  }
+  return process.env.AVNS_NODE || 'node';
+}
+
+// Build the (command, args) to launch the helper, choosing an elevation wrapper
+// by platform. AVNS_NO_ELEVATE=1 runs it unprivileged (dev/CI only — pcap will
+// fail with eaccess, which the UI surfaces).
+function buildHelperSpawn(nodeBin, helperPath, iface) {
+  const helperArgs = [helperPath];
+  if (iface) helperArgs.push('--iface', iface);
+  if (process.env.AVNS_NO_ELEVATE === '1') return { cmd: nodeBin, args: helperArgs };
+  if (process.platform === 'linux')  return { cmd: 'pkexec', args: [nodeBin, ...helperArgs] };
+  if (process.platform === 'darwin') return { cmd: 'sudo',   args: ['-n', nodeBin, ...helperArgs] };
+  return { cmd: nodeBin, args: helperArgs };
+}
+
+function stopIgmpHelper() {
+  if (!igmpHelper) return;
+  const p = igmpHelper;
+  igmpHelper = null;
+  // Closing stdin is the reliable stop signal even when the child is root and
+  // we (unprivileged) can't signal it; also try SIGTERM as a backstop.
+  try { p.stdin.end(); } catch {}
+  try { p.kill('SIGTERM'); } catch {}
+}
+
+ipcMain.handle('igmp-detect-start', (event, { iface } = {}) => {
+  if (igmpHelper) return { error: 'already_running' };
+  const send = (ch, d) => { if (!event.sender.isDestroyed()) event.sender.send(ch, d); };
+  const helperPath = path.join(__dirname, 'scripts', 'net-helper.js');
+  const nodeBin = helperNodeBinary();
+  const { cmd, args } = buildHelperSpawn(nodeBin, helperPath, iface);
+
+  let proc;
+  try { proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] }); }
+  catch (e) { return { error: 'spawn_failed', message: e.message }; }
+  igmpHelper = proc;
+
+  let buf = '';
+  proc.stdout.on('data', d => {
+    buf += d.toString();
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+      if (!line.trim()) continue;
+      let ev; try { ev = JSON.parse(line); } catch { continue; }
+      relayHelperEvent(send, ev);
+    }
+  });
+  proc.stderr.on('data', d => {
+    const msg = d.toString().trim();
+    // pkexec/sudo auth chatter on stderr — surface it but don't treat as fatal.
+    if (msg) send('igmp-error', { message: msg, source: 'stderr' });
+  });
+  proc.on('error', e => {
+    // e.g. pkexec not installed, or auth dismissed.
+    send('igmp-error', { code: 'elevation_failed', message: e.message });
+    igmpHelper = null;
+  });
+  proc.on('exit', (code, sig) => {
+    send('igmp-stopped', { code, signal: sig });
+    if (igmpHelper === proc) igmpHelper = null;
+  });
+
+  return { ok: true };
+});
+
+ipcMain.handle('igmp-detect-stop', () => { stopIgmpHelper(); return { ok: true }; });
+
+function relayHelperEvent(send, ev) {
+  switch (ev.ev) {
+    case 'ready':      send('igmp-ready', ev); break;
+    case 'querier':    send('igmp-querier', ev); break;
+    case 'membership': send('igmp-membership', ev); break;
+    case 'report':     send('igmp-report', ev); break;
+    case 'leave':      send('igmp-leave', ev); break;
+    case 'error':      send('igmp-error', ev); break;
+    case 'log':        break; // helper diagnostics — ignored in the UI for now
+    default:           break;
+  }
+}
 
 // ── Misc IPC ──────────────────────────────────────────────────────────────────
 // Accepts either a bare url string (legacy) or { url, miface } where miface is

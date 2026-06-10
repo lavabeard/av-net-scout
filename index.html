@@ -271,6 +271,7 @@ select{color:var(--t2);cursor:pointer}
     <button class="dtab active" id="tabRange" onclick="setMode('range')">⊞ Range Scan</button>
     <button class="dtab"        id="tabSap"   onclick="setMode('sap')">◎ SAP Listen</button>
     <button class="dtab"        id="tabNet"   onclick="setMode('net')">⊕ Network Discovery</button>
+    <button class="dtab"        id="tabTools" onclick="setMode('tools')">🛠 Network Tools</button>
   </div>
 
   <!-- Range Config -->
@@ -357,6 +358,26 @@ select{color:var(--t2);cursor:pointer}
         </svg>
         mDNS Listen
       </button>
+    </div>
+  </div>
+
+  <!-- Network Tools Config -->
+  <div class="disc-body" id="toolsConfig" style="display:none">
+    <div class="field"><label>Capture NIC</label>
+      <select id="tNic" style="width:200px"><option value="">Auto (default)</option></select></div>
+    <div class="field" style="justify-content:flex-end">
+      <button class="btn cyan" id="igmpBtn" onclick="toggleIgmp()">
+        <svg viewBox="0 0 11 11" fill="none">
+          <circle cx="5.5" cy="5.5" r="1.8" fill="currentColor"/>
+          <circle cx="5.5" cy="5.5" r="3.5" stroke="currentColor" stroke-width=".9" stroke-dasharray="1.5 1.5"/>
+          <circle cx="5.5" cy="5.5" r="5"   stroke="currentColor" stroke-width=".7" opacity=".4"/>
+        </svg>
+        Start IGMP Detector
+      </button>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--t3);line-height:1.8;padding-bottom:2px">
+      Passively captures IGMP (libpcap) to detect the multicast querier and map group membership.
+      Needs administrator access — you'll be prompted on start.
     </div>
   </div>
 </div>
@@ -470,6 +491,53 @@ select{color:var(--t2);cursor:pointer}
     </div>
     <div class="grid" id="netGrid" style="display:none"></div>
   </div>
+
+  <!-- Network tools (IGMP detector) -->
+  <div id="toolsArea" style="display:none">
+    <div style="display:flex;gap:12px;flex-wrap:wrap;padding:10px 0 4px">
+      <!-- Querier status card -->
+      <div style="flex:1;min-width:300px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:14px 16px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="font-size:11px;font-weight:600;letter-spacing:.3px">IGMP QUERIER</span>
+          <span id="igmpPill" class="badge" style="font-size:9px">Stopped</span>
+        </div>
+        <div id="querierBody" style="font-family:var(--mono);font-size:11px;color:var(--t2);line-height:1.9">
+          <span style="color:var(--t3)">Detector not running.</span>
+        </div>
+      </div>
+      <!-- Summary card -->
+      <div style="width:200px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:14px 16px">
+        <div style="font-size:11px;font-weight:600;letter-spacing:.3px;margin-bottom:10px">MEMBERSHIP</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--t2);line-height:1.9">
+          <div>Groups: <span id="mGroups" style="color:var(--cyan)">0</span></div>
+          <div>Reporters: <span id="mReporters" style="color:var(--cyan)">0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="guide" id="toolsGuide">
+      <div class="guide-icon">🛠</div>
+      <div class="guide-head">IGMP snooping &amp; querier detector</div>
+      <div class="guide-body">
+        Start the detector to passively capture IGMP on your network.<br>
+        It reports whether a <em>querier</em> is present (the device that keeps multicast
+        alive on snooping switches), its IP, version and query interval — and maps which
+        devices are subscribed to which multicast groups.<br><br>
+        Requires administrator access for packet capture; you'll be prompted on start.
+      </div>
+    </div>
+
+    <table id="memberTable" style="display:none;width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px;margin-top:6px">
+      <thead>
+        <tr style="text-align:left;color:var(--t3);border-bottom:1px solid rgba(255,255,255,.08)">
+          <th style="padding:6px 8px;font-weight:500">Multicast Group</th>
+          <th style="padding:6px 8px;font-weight:500"># Members</th>
+          <th style="padding:6px 8px;font-weight:500">Reporter IPs</th>
+        </tr>
+      </thead>
+      <tbody id="memberRows"></tbody>
+    </table>
+  </div>
 </div>
 
 <!-- LOG -->
@@ -539,6 +607,7 @@ let sapActive   = false;
 let rotating    = false;
 let netScanning = false;
 let mdnsActive  = false;
+let igmpActive  = false;
 let rotIdx      = 0;
 let rotTimer    = null;
 let rotList     = [];
@@ -580,13 +649,18 @@ function bindEvents() {
   window.api.onMdnsAnnounce(onMdnsAnnounce);
   window.api.onMdnsReady(() => log('info', 'mDNS listener active on 224.0.0.251:5353'));
   window.api.onMdnsError(d => { log('err', 'mDNS: ' + d.message); stopMdns(); });
+  window.api.igmp.onReady(d => { setIgmpStatus('listening'); log('ok', 'IGMP capture started on ' + (d.device || '?') + (d.linkType ? ' [' + d.linkType + ']' : '')); });
+  window.api.igmp.onQuerier(onIgmpQuerier);
+  window.api.igmp.onMembership(onIgmpMembership);
+  window.api.igmp.onError(onIgmpError);
+  window.api.igmp.onStopped(d => { if (igmpActive) log('warn', 'IGMP helper exited' + (d && d.code != null ? ' (code ' + d.code + ')' : '')); finalizeIgmpStop(); });
 }
 
 let nicNameByAddr = {};   // "192.168.1.50" → "eth0", for VLC --miface
 function populateNics(nics) {
   nicNameByAddr = {};
   (nics||[]).forEach(n => { nicNameByAddr[n.address] = n.name; });
-  ['rNic','sNic','nNic'].forEach(id => {
+  ['rNic','sNic','nNic','tNic'].forEach(id => {
     const sel = document.getElementById(id);
     (nics||[]).forEach(n => {
       const o = document.createElement('option');
@@ -624,21 +698,128 @@ function nameKey(s) { return s.ip + ':' + s.port; }
 
 // ── Mode ──────────────────────────────────────────────────────────────────────
 function setMode(m) {
-  const isRange = m === 'range', isSap = m === 'sap', isNet = m === 'net';
+  const isRange = m === 'range', isSap = m === 'sap', isNet = m === 'net', isTools = m === 'tools';
+  const isCast = isRange || isSap;
   document.getElementById('rangeConfig').style.display = isRange ? 'flex' : 'none';
   document.getElementById('sapConfig').style.display   = isSap   ? 'flex' : 'none';
   document.getElementById('netConfig').style.display   = isNet   ? 'flex' : 'none';
+  document.getElementById('toolsConfig').style.display = isTools ? 'flex' : 'none';
   document.getElementById('tabRange').className = 'dtab' + (isRange ? ' active' : '');
   document.getElementById('tabSap').className   = 'dtab' + (isSap   ? ' active' : '');
   document.getElementById('tabNet').className   = 'dtab' + (isNet   ? ' active' : '');
+  document.getElementById('tabTools').className = 'dtab' + (isTools ? ' active' : '');
 
   // Show/hide grids and toolbars
-  document.getElementById('castArea').style.display    = isNet ? 'none' : '';
-  document.getElementById('netArea').style.display     = isNet ? ''     : 'none';
-  document.getElementById('resultsTb').style.display   = (!isNet && streams.size > 0) ? 'flex' : 'none';
+  document.getElementById('castArea').style.display     = isCast  ? '' : 'none';
+  document.getElementById('netArea').style.display      = isNet   ? '' : 'none';
+  document.getElementById('toolsArea').style.display    = isTools ? '' : 'none';
+  document.getElementById('resultsTb').style.display    = (isCast && streams.size > 0) ? 'flex' : 'none';
   document.getElementById('netResultsTb').style.display = (isNet && netStreams.size > 0) ? 'flex' : 'none';
-  document.getElementById('netProgBar').style.display  = (isNet && netScanning) ? 'flex' : 'none';
-  document.getElementById('progBar').style.display     = (!isNet && scanning) ? 'flex' : 'none';
+  document.getElementById('netProgBar').style.display   = (isNet && netScanning) ? 'flex' : 'none';
+  document.getElementById('progBar').style.display      = (isCast && scanning) ? 'flex' : 'none';
+}
+
+// ── Network Tools: IGMP detector ────────────────────────────────────────────
+let igmpQueriers = {};   // ip -> { version, intervalMs, general }
+
+function setIgmpStatus(state) {
+  const pill = document.getElementById('igmpPill');
+  const map = {
+    stopped:   ['Stopped',   'badge'],
+    starting:  ['Starting…', 'badge warn'],
+    listening: ['Listening', 'badge ok'],
+    error:     ['Error',     'badge warn'],
+  };
+  const [txt, cls] = map[state] || map.stopped;
+  pill.textContent = txt; pill.className = cls;
+}
+
+function toggleIgmp() {
+  if (igmpActive) { stopIgmp(); return; }
+  const iface = v('tNic');
+  igmpActive = true;
+  igmpQueriers = {};
+  setIgmpStatus('starting');
+  document.getElementById('igmpBtn').innerHTML = '■ Stop Detector';
+  document.getElementById('toolsGuide').style.display = 'none';
+  log('info', 'Starting IGMP detector' + (iface ? ' on ' + iface : '') + ' — may prompt for administrator access');
+  window.api.igmp.start(iface).then(r => {
+    if (r && r.error) { log('err', 'IGMP detector: ' + (r.message || r.error)); finalizeIgmpStop(); }
+  });
+}
+
+function stopIgmp() {
+  window.api.igmp.stop();
+  log('info', 'IGMP detector stopped');
+  finalizeIgmpStop();
+}
+
+function finalizeIgmpStop() {
+  igmpActive = false;
+  setIgmpStatus('stopped');
+  document.getElementById('igmpBtn').innerHTML = 'Start IGMP Detector';
+}
+
+function onIgmpError(d) {
+  if (d && d.source === 'stderr') { log('warn', 'IGMP helper: ' + d.message); return; }
+  setIgmpStatus('error');
+  const msg = (d && (d.message || d.code)) || 'unknown error';
+  if (d && d.code === 'no_pcap') log('err', 'IGMP: libpcap binding not installed — run npm install');
+  else if (d && (d.code === 'eaccess' || d.code === 'elevation_failed')) log('err', 'IGMP: administrator access required (' + msg + ')');
+  else log('err', 'IGMP: ' + msg);
+}
+
+function onIgmpQuerier(d) {
+  if (!d || !d.ip) return;
+  igmpQueriers[d.ip] = { version: d.version, intervalMs: d.intervalMs, general: d.general };
+  renderQueriers();
+}
+
+function renderQueriers() {
+  const body = document.getElementById('querierBody');
+  const ips = Object.keys(igmpQueriers);
+  if (ips.length === 0) {
+    body.innerHTML = igmpActive
+      ? '<span style="color:var(--t3)">Listening… no querier seen yet.</span>'
+      : '<span style="color:var(--t3)">Detector not running.</span>';
+    return;
+  }
+  // Lowest IP wins the IGMP querier election.
+  const ipNum = ip => ip.split('.').reduce((a, o) => a * 256 + (parseInt(o) || 0), 0);
+  ips.sort((a, b) => ipNum(a) - ipNum(b));
+  body.innerHTML = ips.map((ip, idx) => {
+    const q = igmpQueriers[ip];
+    const ver = 'IGMPv' + (q.version || '?');
+    const intvl = q.intervalMs ? (Math.round(q.intervalMs / 100) / 10) + 's' : '—';
+    const role = idx === 0
+      ? '<span style="color:var(--ok,#4ade80)">● active querier</span>'
+      : '<span style="color:var(--t3)">○ standby</span>';
+    return `<div><span style="color:var(--cyan)">${esc(ip)}</span> &nbsp; ${ver} &nbsp; interval ${intvl} &nbsp; ${role}</div>`;
+  }).join('');
+}
+
+function onIgmpMembership(d) {
+  const groups = (d && d.groups) || [];
+  document.getElementById('mGroups').textContent = groups.length;
+  document.getElementById('mReporters').textContent = groups.reduce((s, g) => s + (g.count || 0), 0);
+
+  if (d && Array.isArray(d.queriers)) {
+    // Sync querier list with the authoritative snapshot (handles expiry).
+    const next = {};
+    for (const q of d.queriers) next[q.ip] = { version: q.version, intervalMs: q.intervalMs };
+    if (Object.keys(next).length > 0 || Object.keys(igmpQueriers).length > 0) { igmpQueriers = next; renderQueriers(); }
+  }
+
+  const table = document.getElementById('memberTable');
+  const rows = document.getElementById('memberRows');
+  if (groups.length === 0) { table.style.display = 'none'; return; }
+  table.style.display = '';
+  rows.innerHTML = groups.map(g =>
+    `<tr style="border-bottom:1px solid rgba(255,255,255,.05)">
+       <td style="padding:5px 8px;color:var(--cyan)">${esc(g.group)}</td>
+       <td style="padding:5px 8px">${g.count}</td>
+       <td style="padding:5px 8px;color:var(--t2)">${esc((g.reporters || []).join(', '))}</td>
+     </tr>`).join('');
 }
 
 // ── Range Scan ────────────────────────────────────────────────────────────────

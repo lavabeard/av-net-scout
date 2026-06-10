@@ -14,7 +14,9 @@
     "dist:linux": "electron-builder --linux --publish never",
     "pack":       "electron-builder --dir   --publish never"
   },
-  "dependencies": {},
+  "dependencies": {
+    "cap": "^0.2.1"
+  },
   "devDependencies": {
     "electron":         "^30.0.0",
     "electron-builder": "^24.13.0"
@@ -23,7 +25,8 @@
     "appId":       "com.alpha.multicast-ring-analyzer",
     "productName": "Multicast Ring Analyzer",
     "copyright":   "Alpha AV/IT",
-    "files": ["main.js", "preload.js", "index.html", "assets/"],
+    "files": ["main.js", "preload.js", "index.html", "assets/", "scripts/"],
+    "asarUnpack": ["scripts/**", "node_modules/cap/**"],
     "linux": {
       "target": ["AppImage", "deb"],
       "icon":   "assets/icon.png",

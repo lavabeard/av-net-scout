@@ -202,6 +202,13 @@ reports).
 - Build a live **membership map**: group → list of reporter IPs (with last-seen).
 - Emit `igmp-querier` / `igmp-report`. This card runs standalone as a pure
   diagnostic and is the recommended default before enabling the active tools.
+- **Impl note (Phase 1):** the BPF filter is `ip proto 2`, not the `igmp`
+  keyword — the latter does not compile reliably through the `cap` libpcap
+  binding (verified: `igmp` → 0 packets, `ip proto 2` → matches). Also, on
+  **macOS** the host's *own* outbound IGMP joins are not looped back to BPF on
+  the egress interface (a BSD quirk), so self-generated joins won't appear in
+  local testing there; external IGMP from other devices is captured/decoded
+  fine. This does not affect the Linux target.
 
 ---
 

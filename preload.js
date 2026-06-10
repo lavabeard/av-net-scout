@@ -33,5 +33,18 @@ contextBridge.exposeInMainWorld('api', {
   onMdnsReady:    cb => ipcRenderer.on('mdns-ready',    (_, d) => cb(d)),
   onMdnsError:    cb => ipcRenderer.on('mdns-error',    (_, d) => cb(d)),
 
+  // Network Tools — IGMP detector (privileged helper)
+  igmp: {
+    start: (iface)  => ipcRenderer.invoke('igmp-detect-start', { iface }),
+    stop:  ()       => ipcRenderer.invoke('igmp-detect-stop'),
+    onReady:      cb => ipcRenderer.on('igmp-ready',      (_, d) => cb(d)),
+    onQuerier:    cb => ipcRenderer.on('igmp-querier',    (_, d) => cb(d)),
+    onMembership: cb => ipcRenderer.on('igmp-membership', (_, d) => cb(d)),
+    onReport:     cb => ipcRenderer.on('igmp-report',     (_, d) => cb(d)),
+    onLeave:      cb => ipcRenderer.on('igmp-leave',      (_, d) => cb(d)),
+    onError:      cb => ipcRenderer.on('igmp-error',      (_, d) => cb(d)),
+    onStopped:    cb => ipcRenderer.on('igmp-stopped',    (_, d) => cb(d)),
+  },
+
   removeListeners: ch => ipcRenderer.removeAllListeners(ch),
 });
