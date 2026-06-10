@@ -545,8 +545,15 @@ ipcMain.handle('igmp-detect-start', (event, { iface } = {}) => {
     if (msg) send('igmp-error', { message: msg, source: 'stderr' });
   });
   proc.on('error', e => {
-    // e.g. pkexec not installed, or auth dismissed.
-    send('igmp-error', { code: 'elevation_failed', message: e.message });
+    // e.g. pkexec/sudo not installed, or auth dismissed.
+    let message = e.message;
+    if (/ENOENT/.test(e.message)) {
+      if (process.platform === 'linux')
+        message = `${cmd} not found — install it (e.g. "sudo apt install pkexec" or "policykit-1"), then retry`;
+      else
+        message = `${cmd} not found on PATH`;
+    }
+    send('igmp-error', { code: 'elevation_failed', message });
     igmpHelper = null;
   });
   proc.on('exit', (code, sig) => {
