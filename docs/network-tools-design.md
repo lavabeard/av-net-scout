@@ -170,19 +170,32 @@ Electron (unprivileged)  ──spawn pkexec──▶  net-helper.js (root)
   seen with a numerically lower source IP, stay silent (it wins). Re-arm if it
   disappears (no queries for ~2× interval). Lab "force" override available.
 
-### 5.3 Detector (raw recv or pcap)
-- Open raw `IPPROTO_IGMP` recv socket (root) bound to NIC.
-- Classify by IGMP type: `0x11` query (→ querier present; src IP, max-resp-time
-  ⇒ version), `0x16`/`0x22` reports (→ membership), `0x17` leave.
+### 5.3 Detector (libpcap, promiscuous)
+**Decision: libpcap-based promiscuous capture** (not raw IGMP recv) — so the
+detector sees not just queries but **every device's membership reports**, giving
+full "who is subscribing to what group" visibility (a raw `IPPROTO_IGMP` socket
+only sees traffic addressed to the host, i.e. queries but not other hosts'
+reports).
+- Open a pcap handle on the selected NIC in promiscuous mode with BPF filter
+  `igmp` (protocol 2). Needs root / `CAP_NET_RAW` → runs inside the same
+  privileged helper.
+- Parse the captured Ethernet→IP→IGMP frames. Classify by IGMP type: `0x11`
+  query (→ querier present; src IP, max-resp-time ⇒ version), `0x16`/`0x22`
+  reports (→ membership: reporter IP + group), `0x17` leave.
 - Measure interval between successive queries to report the querier's cadence.
-- Emit `igmp-querier` / `igmp-report`. This card can run standalone as a pure
+- Build a live **membership map**: group → list of reporter IPs (with last-seen).
+- Emit `igmp-querier` / `igmp-report`. This card runs standalone as a pure
   diagnostic and is the recommended default before enabling the active tools.
 
 ---
 
 ## 6. Build / packaging implications
 
-- New native dependency **`raw-socket`** (node-gyp). DHCP needs none.
+- Two native dependencies, both built against the **bundled Node** ABI:
+  - **`raw-socket`** (node-gyp) — IGMP querier *send* (Phase 2).
+  - a **libpcap binding** (e.g. `cap`/`pcap`, node-gyp) — detector capture
+    (Phase 1). Build needs `libpcap-dev`; runtime libpcap ships on Linux/macOS.
+  DHCP needs neither (pure `dgram`).
 - The privileged helper runs under **Node**, not Electron, to keep elevation off
   the GUI process — so `raw-socket` must be built for the **Node ABI** that runs
   the helper. **Decision: bundle a known Node runtime in the AppImage** for the
@@ -190,8 +203,8 @@ Electron (unprivileged)  ──spawn pkexec──▶  net-helper.js (root)
   bundled Node's ABI — self-contained, no user prerequisite, predictable. Cost:
   ~30–50 MB larger AppImage; we own bundled-Node updates.
 - CI (`.github/workflows/build.yml`): add a native-build step (`python3`,
-  build-essential) for `raw-socket`; verify the helper loads under the target Node
-  in the Linux container smoke test.
+  build-essential, **`libpcap-dev`**) for `raw-socket` and the pcap binding;
+  verify the helper loads both under the bundled Node in the Linux smoke test.
 - `pkexec` policy: optionally ship a polkit `.policy` file for a friendlier auth
   prompt; otherwise rely on the default `pkexec` dialog.
 
@@ -241,4 +254,6 @@ so the querier/detector would depend on **Npcap**. Defer until Linux is solid.
 - Ship a polkit policy (smoother prompt) or accept the default `pkexec` dialog?
 - DHCP: how much option coverage do AV devices actually need beyond mask/router/DNS?
 - Should the querier also send group-specific queries, or general-only (simpler)?
-- Detector via raw `IPPROTO_IGMP` recv (no extra dep) vs libpcap (richer, heavier)?
+- ~~Detector via raw `IPPROTO_IGMP` recv (no extra dep) vs libpcap (richer, heavier)?~~
+  **Resolved: libpcap promiscuous capture** for full membership visibility (queries
+  + every device's reports). See §5.3, §6. Windows will require Npcap (§7).
