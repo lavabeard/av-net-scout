@@ -64,7 +64,7 @@ Download from https://www.videolan.org — the app detects VLC in its default in
 Requires Node.js 18+.
 
 ```bash
-git clone https://github.com/lavabeard/Multicast-ring-analyzer.git
+git clone https://github.com/lavabeard/av-net-scout.git
 cd multicast-ring-tester
 npm install
 ```
@@ -160,7 +160,7 @@ Upgrade scripts back up your existing installation **and** your Electron user da
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/lavabeard/Multicast-ring-analyzer.git
+git clone https://github.com/lavabeard/av-net-scout.git
 cd Multicast-ring-analyzer
 ./scripts/upgrade.sh
 ```
@@ -178,7 +178,7 @@ Backups are saved to `~/.local/share/multicast-ring-tester-backups/<timestamp>/`
 ### Windows (PowerShell)
 
 ```powershell
-git clone https://github.com/lavabeard/Multicast-ring-analyzer.git
+git clone https://github.com/lavabeard/av-net-scout.git
 cd Multicast-ring-analyzer
 .\scripts\upgrade.ps1
 ```

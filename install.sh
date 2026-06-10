@@ -5,7 +5,7 @@
 #   bash install.sh
 #
 # Or one-liner from GitHub:
-#   curl -fsSL https://raw.githubusercontent.com/lavabeard/multicast-ring-analyzer/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/lavabeard/av-net-scout/main/install.sh | bash
 #
 # Flags:
 #   --dry-run        show every action without making changes
@@ -18,7 +18,7 @@ set -euo pipefail
 # ── config ─────────────────────────────────────────────────────────────────────
 APP_NAME="Multicast Ring Analyzer"
 APP_ID="multicast-ring-analyzer"
-REPO="lavabeard/multicast-ring-analyzer"
+REPO="lavabeard/av-net-scout"
 INSTALL_DIR="$HOME/Applications"
 APPIMAGE_PATH="$INSTALL_DIR/$APP_NAME.AppImage"
 DESKTOP_DIR="$HOME/.local/share/applications"
@@ -539,7 +539,7 @@ User data         : $USER_DATA
   Re-run the install script at any time — it backs up your current
   install and user data before installing the new version:
 
-    curl -fsSL https://raw.githubusercontent.com/lavabeard/Multicast-ring-analyzer/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/lavabeard/av-net-scout/main/install.sh | bash
 
 ──────────────────────────────────────────────────────────────────
  UNINSTALLING
@@ -565,8 +565,8 @@ User data         : $USER_DATA
  SUPPORT / SOURCE
 ──────────────────────────────────────────────────────────────────
 
-  GitHub : https://github.com/lavabeard/Multicast-ring-analyzer
-  Issues : https://github.com/lavabeard/Multicast-ring-analyzer/issues
+  GitHub : https://github.com/lavabeard/av-net-scout
+  Issues : https://github.com/lavabeard/av-net-scout/issues
 
 README
   info "README written → $README_PATH"

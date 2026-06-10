@@ -17,7 +17,7 @@ set -euo pipefail
 
 APP_NAME="Multicast Ring Tester"
 APP_ID="multicast-ring-tester"
-REPO_URL="https://github.com/lavabeard/Multicast-ring-analyzer.git"
+REPO_URL="https://github.com/lavabeard/av-net-scout.git"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 STAMP="$(date +%Y%m%d_%H%M%S)"

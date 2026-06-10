@@ -28,7 +28,7 @@ $ErrorActionPreference = 'Stop'
 
 $AppName   = "Multicast Ring Tester"
 $AppId     = "multicast-ring-tester"
-$RepoUrl   = "https://github.com/lavabeard/Multicast-ring-analyzer.git"
+$RepoUrl   = "https://github.com/lavabeard/av-net-scout.git"
 $Stamp     = Get-Date -Format "yyyyMMdd_HHmmss"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoDir   = Split-Path -Parent $ScriptDir
