@@ -578,6 +578,16 @@ select{color:var(--t2);cursor:pointer}
       </thead>
       <tbody id="memberRows"></tbody>
     </table>
+
+    <!-- Live sniffed IGMP traffic -->
+    <div id="igmpActivityWrap" style="display:none;margin-top:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.05em;text-transform:uppercase">IGMP Activity — live sniff</span>
+        <span id="igmpActivityCount" style="font-family:var(--mono);font-size:9px;color:var(--t3)"></span>
+        <button class="btn" style="height:18px;padding:0 7px;font-size:8px;margin-left:auto" onclick="document.getElementById('igmpActivity').innerHTML=''">Clear</button>
+      </div>
+      <div id="igmpActivity" style="height:150px;overflow-y:auto;background:rgba(0,0,0,.25);border:1px solid var(--bd);border-radius:6px;padding:6px 9px;font-family:var(--mono);font-size:10px;line-height:1.7"></div>
+    </div>
   </div>
 </div>
 
@@ -693,8 +703,10 @@ function bindEvents() {
   window.api.onMdnsReady(() => log('info', 'mDNS listener active on 224.0.0.251:5353'));
   window.api.onMdnsError(d => { log('err', 'mDNS: ' + d.message); stopMdns(); });
   window.api.igmp.onReady(d => { setIgmpStatus('listening'); log('ok', 'IGMP capture started on ' + (d.device || '?') + (d.linkType ? ' [' + d.linkType + ']' : '')); });
-  window.api.igmp.onQuerier(onIgmpQuerier);
+  window.api.igmp.onQuerier(d => { onIgmpQuerier(d); igmpFeed('query', 'QUERY  from ' + (d.ip || '?') + (d.general ? '  (general)' : (d.group ? '  →  ' + d.group : '')) + (d.version ? '  v' + d.version : '')); });
   window.api.igmp.onMembership(onIgmpMembership);
+  window.api.igmp.onReport(d => igmpFeed('join',  'JOIN   ' + (d.reporter || '?') + '  →  ' + d.group + (d.version ? '  v' + d.version : '')));
+  window.api.igmp.onLeave(d => igmpFeed('leave', 'LEAVE  ' + (d.reporter || '?') + '  →  ' + d.group));
   window.api.igmp.onError(onIgmpError);
   window.api.igmp.onStopped(d => { if (igmpActive) log('warn', 'IGMP helper exited' + (d && d.code != null ? ' (code ' + d.code + ')' : '')); finalizeIgmpStop(); });
   window.api.igmp.onQuerierReady(d => { querierOn = true; document.getElementById('qBtn').innerHTML = '■ Stop Querier'; log('ok', 'IGMP querier started on ' + d.srcIp + ' (interval ' + d.intervalSecs + 's' + (d.force ? ', forced' : '') + ')'); });
@@ -768,6 +780,23 @@ function setMode(m) {
 
 // ── Network Tools: IGMP detector ────────────────────────────────────────────
 let igmpQueriers = {};   // ip -> { version, intervalMs, general }
+let igmpFeedCount = 0;
+
+// Live sniffed-IGMP feed (join/leave/query). Makes the snooper's capture visible.
+function igmpFeed(kind, text) {
+  const el = document.getElementById('igmpActivity');
+  if (!el) return;
+  document.getElementById('igmpActivityWrap').style.display = 'block';
+  const color = { join: 'var(--green)', leave: 'var(--amber)', query: 'var(--cyan)' }[kind] || 'var(--t2)';
+  const row = document.createElement('div');
+  const t = new Date().toLocaleTimeString();
+  row.innerHTML = '<span style="color:var(--t3)">' + t + '</span>  <span style="color:' + color + '">' + esc(text) + '</span>';
+  el.appendChild(row);
+  while (el.childNodes.length > 250) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+  igmpFeedCount++;
+  document.getElementById('igmpActivityCount').textContent = igmpFeedCount + ' packets';
+}
 
 function setIgmpStatus(state) {
   const pill = document.getElementById('igmpPill');
@@ -786,6 +815,9 @@ function toggleIgmp() {
   const iface = v('tNic');
   igmpActive = true;
   igmpQueriers = {};
+  igmpFeedCount = 0;
+  document.getElementById('igmpActivity').innerHTML = '';
+  document.getElementById('igmpActivityCount').textContent = '';
   setIgmpStatus('starting');
   document.getElementById('igmpBtn').innerHTML = '■ Stop Detector';
   document.getElementById('toolsGuide').style.display = 'none';
@@ -1034,6 +1066,14 @@ async function toggleNetScan() {
   document.getElementById('netProgFill').style.width = '0%';
   setStatus(true, 'Net scan: ' + subnet + '.1–254');
   log('info', 'Net scan: ' + subnet + '.1–254 · protocols: ' + protocols.join(', ') + ' · ' + n('nConc') + ' concurrent');
+  const PROBE_DESC = {
+    rtsp: 'RTSP→TCP 554/8554, ffprobe rtsp://ip/',
+    rtmp: 'RTMP→TCP 1935, ffprobe rtmp://ip/live',
+    hls:  'HLS→TCP 80/8080/8888, ffprobe http://ip/{index.m3u8,hls,live,stream,/}',
+    udp:  'UDP→ffprobe udp://@ip:' + (n('nUdpPort') || 4444),
+  };
+  log('info', 'Per host: ' + protocols.map(p => PROBE_DESC[p]).filter(Boolean).join('  ·  '));
+  log('info', 'A host is reported ONLY if ffprobe finds a real audio/video stream (filters web-UI false positives).');
 
   try {
     await window.api.startNetScan({
@@ -1049,10 +1089,11 @@ async function toggleNetScan() {
 function stopNetScan() { try { window.api.stopNetScan(); } catch {} }
 
 function onNetScanResult(d) {
-  const { ip, port, url, protocol, result } = d;
+  const { ip, port, url, protocol, result, detected } = d;
   const key = 'net:' + protocol + ':' + ip + ':' + port;
-  log('ok', 'Found ' + protocol.toUpperCase() + ': ' + url);
-  upsertNetStream({ key, ip, port, url, protocol, source: 'net', result, seq: netStreamSeq++, iface: netIface });
+  const det = detected ? ('  [' + [detected.format, detected.vcodec, detected.res].filter(Boolean).join(' ') + ']') : '';
+  log('ok', 'Found ' + protocol.toUpperCase() + ': ' + url + det);
+  upsertNetStream({ key, ip, port, url, protocol, source: 'net', result, detected, seq: netStreamSeq++, iface: netIface });
 }
 
 function onNetScanProgress(d) {

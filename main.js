@@ -68,6 +68,26 @@ function probeUrl(url, timeoutMs) {
 
 ipcMain.handle('probe-stream', (_e, url) => probeUrl(url, 9000));
 
+// A probe is a real A/V hit only if ffprobe actually found a video or audio
+// stream. ffprobe will sometimes "open" a plain web server or empty endpoint and
+// return ok with zero decodable streams — those are the Network Discovery false
+// positives. This gate filters them and reports what was actually detected, so a
+// hit is labeled by its true format/codec (e.g. "mjpeg") rather than the bucket
+// it was probed under (e.g. "hls").
+function avSummary(result) {
+  if (!result || !result.ok || !result.raw) return null;
+  const streams = result.raw.streams || [];
+  const v = streams.find(s => s.codec_type === 'video');
+  const a = streams.find(s => s.codec_type === 'audio');
+  if (!v && !a) return null;
+  return {
+    format: (result.raw.format && result.raw.format.format_name) || '',
+    vcodec: v ? (v.codec_name || '') : '',
+    acodec: a ? (a.codec_name || '') : '',
+    res: (v && v.width && v.height) ? v.width + 'x' + v.height : '',
+  };
+}
+
 // ── Range scan ────────────────────────────────────────────────────────────────
 let scanCtx = { running: false, cancel: false };
 
@@ -202,7 +222,8 @@ async function runNetScan(event, params) {
           if (open) {
             const url = `rtsp://${ip}:${port}/`;
             const result = await probeUrl(url, timeoutMs);
-            if (result.ok) { results.push({ ip, port, url, protocol: 'rtsp', result }); found++; }
+            const av = avSummary(result);
+            if (av) { results.push({ ip, port, url, protocol: 'rtsp', result, detected: av }); found++; }
           }
         }
       }
@@ -214,7 +235,8 @@ async function runNetScan(event, params) {
           if (open) {
             const url = `rtmp://${ip}:${port}/live`;
             const result = await probeUrl(url, timeoutMs);
-            if (result.ok) { results.push({ ip, port, url, protocol: 'rtmp', result }); found++; }
+            const av = avSummary(result);
+            if (av) { results.push({ ip, port, url, protocol: 'rtmp', result, detected: av }); found++; }
           }
         }
       }
@@ -224,11 +246,12 @@ async function runNetScan(event, params) {
           if (netScanCtx.cancel) break;
           const open = await checkPort(ip, port, 800);
           if (open) {
-            const paths = ['/', '/live', '/stream', '/hls', '/index.m3u8'];
+            const paths = ['/index.m3u8', '/hls', '/live', '/stream', '/'];
             for (const p of paths) {
               const url = `http://${ip}:${port}${p}`;
               const result = await probeUrl(url, timeoutMs);
-              if (result.ok) { results.push({ ip, port, url, protocol: 'hls', result }); found++; break; }
+              const av = avSummary(result);
+              if (av) { results.push({ ip, port, url, protocol: 'hls', result, detected: av }); found++; break; }
             }
           }
         }
@@ -244,7 +267,8 @@ async function runNetScan(event, params) {
           const port = parseInt(udpPort) || 4444;
           const url = `udp://@${ip}:${port}`;
           const result = await probeUrl(url, timeoutMs);
-          if (result.ok) { results.push({ ip, port, url, protocol: 'udp', result }); found++; }
+          const av = avSummary(result);
+          if (av) { results.push({ ip, port, url, protocol: 'udp', result, detected: av }); found++; }
         }
       }
 
@@ -481,17 +505,43 @@ ipcMain.handle('stop-mdns', () => {
 // renderer. See docs/network-tools-design.md.
 let igmpHelper = null;
 
-// Resolve the Node binary that runs the helper. Production bundles its own Node
-// (decision in the design spec); dev uses system node or an AVNS_NODE override.
-function helperNodeBinary() {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, 'node');
-    if (fs.existsSync(bundled)) {
-      try { fs.chmodSync(bundled, 0o755); } catch {}  // extraResources may drop the exec bit
-      return bundled;
-    }
+// Resolve where the helper's Node binary + script live, returning real paths the
+// root (pkexec'd) process can actually read.
+//
+// AppImage gotcha: an AppImage runs from a *private* FUSE mount (/tmp/.mount_*)
+// that only the invoking user can read — so a root helper launched from there
+// fails with "Permission denied" (exit 127). When we detect an AppImage, we
+// copy Node + the helper script + the native modules into a normal directory
+// under userData (which root can read) and launch from there. For .deb/dev the
+// in-place paths are already real, so we use them directly.
+function resolveHelper() {
+  if (!app.isPackaged) {
+    return { nodeBin: process.env.AVNS_NODE || 'node',
+             helperPath: path.join(__dirname, 'scripts', 'net-helper.js') };
   }
-  return process.env.AVNS_NODE || 'node';
+
+  const srcNode = path.join(process.resourcesPath, 'node');
+  const inPlace = { nodeBin: srcNode, helperPath: path.join(__dirname, 'scripts', 'net-helper.js') };
+  const isAppImage = !!process.env.APPIMAGE || /\/\.mount_/.test(process.resourcesPath || '');
+
+  if (!isAppImage) {
+    try { fs.chmodSync(srcNode, 0o755); } catch {}
+    return inPlace;
+  }
+
+  // AppImage: stage out of the FUSE mount (once per version).
+  const stageDir = path.join(app.getPath('userData'), 'helper-' + app.getVersion());
+  const dstNode = path.join(stageDir, 'node');
+  const dstHelper = path.join(stageDir, 'net-helper.js');
+  fs.mkdirSync(path.join(stageDir, 'node_modules'), { recursive: true });
+  if (!fs.existsSync(dstNode)) fs.copyFileSync(srcNode, dstNode);
+  fs.chmodSync(dstNode, 0o755);
+  fs.copyFileSync(path.join(__dirname, 'scripts', 'net-helper.js'), dstHelper);
+  for (const m of ['cap', 'raw-socket']) {
+    const dstM = path.join(stageDir, 'node_modules', m);
+    if (!fs.existsSync(dstM)) fs.cpSync(path.join(__dirname, 'node_modules', m), dstM, { recursive: true });
+  }
+  return { nodeBin: dstNode, helperPath: dstHelper };
 }
 
 // Build the (command, args) to launch the helper, choosing an elevation wrapper
@@ -519,9 +569,10 @@ function stopIgmpHelper() {
 ipcMain.handle('igmp-detect-start', (event, { iface } = {}) => {
   if (igmpHelper) return { error: 'already_running' };
   const send = (ch, d) => { if (!event.sender.isDestroyed()) event.sender.send(ch, d); };
-  const helperPath = path.join(__dirname, 'scripts', 'net-helper.js');
-  const nodeBin = helperNodeBinary();
-  const { cmd, args } = buildHelperSpawn(nodeBin, helperPath, iface);
+  let resolved;
+  try { resolved = resolveHelper(); }
+  catch (e) { return { error: 'stage_failed', message: 'could not prepare privileged helper: ' + e.message }; }
+  const { cmd, args } = buildHelperSpawn(resolved.nodeBin, resolved.helperPath, iface);
 
   let proc;
   try { proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] }); }
