@@ -25,6 +25,10 @@
 
 'use strict';
 
+const dgram = require('dgram');
+const os = require('os');
+const crypto = require('crypto');
+
 // ── stdout event writer ─────────────────────────────────────────────────────
 function emit(obj) {
   try { process.stdout.write(JSON.stringify(obj) + '\n'); } catch { /* pipe gone */ }
@@ -474,7 +478,134 @@ function stopQuerier() {
   emit({ ev: 'querier-stopped' });
 }
 
+// ── DHCP detector (dgram, root for port 68) ──────────────────────────────────
+// Read-only probe: broadcasts a few DHCPDISCOVERs (with distinct locally-
+// administered MACs to sample the pool) and reports every DHCPOFFER — server IP,
+// offered address, mask, gateway, DNS, lease, and a pool-range hint. Never sends
+// a REQUEST, so it does not take a lease. Multiple responders == rogue DHCP.
+
+const DHCP_MAGIC = [0x63, 0x82, 0x53, 0x63];
+
+function buildDhcpDiscover(mac, xid) {
+  const b = Buffer.alloc(244 + 16);
+  b[0] = 1; b[1] = 1; b[2] = 6; b[3] = 0;        // op, htype, hlen, hops
+  xid.copy(b, 4);                                 // xid
+  b.writeUInt16BE(0x8000, 10);                    // flags: broadcast reply
+  mac.copy(b, 28, 0, 6);                          // chaddr
+  let o = 236;
+  b[o++] = DHCP_MAGIC[0]; b[o++] = DHCP_MAGIC[1]; b[o++] = DHCP_MAGIC[2]; b[o++] = DHCP_MAGIC[3];
+  b[o++] = 53; b[o++] = 1; b[o++] = 1;            // option 53 = DISCOVER
+  const params = [1, 3, 6, 15, 28, 51, 54];       // mask, router, dns, domain, bcast, lease, server-id
+  b[o++] = 55; b[o++] = params.length; for (const p of params) b[o++] = p;
+  b[o++] = 255;                                   // end
+  return b.subarray(0, o);
+}
+
+function parseDhcpReply(buf) {
+  if (buf.length < 240 || buf[0] !== 2) return null;                       // BOOTREPLY
+  if (!(buf[236] === 0x63 && buf[237] === 0x82 && buf[238] === 0x53 && buf[239] === 0x63)) return null;
+  const yiaddr = ip4(buf, 16);
+  const siaddr = ip4(buf, 20);
+  const opt = {};
+  let o = 240;
+  while (o < buf.length) {
+    const code = buf[o++];
+    if (code === 255) break;
+    if (code === 0) continue;
+    const len = buf[o++]; if (o + len > buf.length) break;
+    opt[code] = buf.subarray(o, o + len); o += len;
+  }
+  const ipOpt  = c => (opt[c] && opt[c].length >= 4) ? ip4(opt[c], 0) : null;
+  const ipList = c => { const r = []; if (opt[c]) for (let i = 0; i + 4 <= opt[c].length; i += 4) r.push(ip4(opt[c], i)); return r; };
+  const u32    = c => (opt[c] && opt[c].length >= 4) ? opt[c].readUInt32BE(0) : null;
+  const str    = c => opt[c] ? opt[c].toString('utf8').replace(/\0+$/, '') : null;
+  return {
+    type: opt[53] ? opt[53][0] : null,            // 2 == OFFER
+    yiaddr, siaddr,
+    server: ipOpt(54) || (siaddr !== '0.0.0.0' ? siaddr : null),
+    mask: ipOpt(1), router: ipOpt(3), dns: ipList(6),
+    domain: str(15), broadcast: ipOpt(28), leaseSecs: u32(51),
+  };
+}
+
+const dhcp = { sock: null, timer: null, servers: new Map(), offered: [] };
+
+function ifaceMac(iface) {
+  try {
+    for (const addrs of Object.values(os.networkInterfaces())) {
+      for (const a of addrs) {
+        if (a.address === iface && a.mac) return Buffer.from(a.mac.split(':').map(h => parseInt(h, 16)));
+      }
+    }
+  } catch {}
+  return crypto.randomBytes(6);
+}
+
+function startDhcpDetect(iface, oneShot) {
+  if (dhcp.sock) { emit({ ev: 'error', code: 'dhcp_running', message: 'DHCP detect already running' }); return; }
+  const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  dhcp.sock = sock; dhcp.servers = new Map(); dhcp.offered = []; dhcp.oneShot = !!oneShot;
+
+  sock.on('error', e => {
+    const busy = /EADDRINUSE|EACCES/.test(e.message);
+    emit({ ev: 'error', code: busy ? 'dhcp_port_busy' : 'dhcp_socket',
+      message: busy ? 'Cannot bind UDP port 68 — a system DHCP client is using it. ' + e.message : e.message });
+    stopDhcpDetect();
+  });
+
+  sock.on('message', msg => {
+    const r = parseDhcpReply(msg);
+    if (!r || r.type !== 2) return;               // OFFERs only
+    if (!dhcp.servers.has(r.server || '?')) dhcp.servers.set(r.server || '?', r);
+    dhcp.offered.push(r.yiaddr);
+    emit({ ev: 'dhcp-offer', ...r });
+  });
+
+  sock.bind(68, () => {
+    try { sock.setBroadcast(true); } catch {}
+    emit({ ev: 'dhcp-ready', iface: iface || null });
+    const baseMac = ifaceMac(iface);
+    let n = 0;
+    const sendOne = () => {
+      if (!dhcp.sock || n >= 5) return;
+      const mac = Buffer.from(baseMac); mac[0] = 0x02; mac[5] = (mac[5] + n) & 0xff;
+      const pkt = buildDhcpDiscover(mac, crypto.randomBytes(4));
+      sock.send(pkt, 0, pkt.length, 67, '255.255.255.255',
+        err => { if (err) emit({ ev: 'error', code: 'dhcp_send', message: err.message }); });
+      n++;
+    };
+    sendOne();
+    const burst = setInterval(() => { if (n >= 5) { clearInterval(burst); return; } sendOne(); }, 300);
+  });
+
+  dhcp.timer = setTimeout(finishDhcp, 4500);
+}
+
+function finishDhcp() {
+  let poolMin = null, poolMax = null;
+  for (const ip of dhcp.offered) {
+    if (poolMin === null || ipNum(ip) < ipNum(poolMin)) poolMin = ip;
+    if (poolMax === null || ipNum(ip) > ipNum(poolMax)) poolMax = ip;
+  }
+  emit({
+    ev: 'dhcp-done',
+    servers: [...dhcp.servers.values()],
+    count: dhcp.servers.size,
+    offered: [...new Set(dhcp.offered)],
+    poolMin, poolMax,
+  });
+  const oneShot = dhcp.oneShot;
+  stopDhcpDetect();
+  if (oneShot) shutdown(0);   // launched via --dhcp: this is a one-shot probe
+}
+
+function stopDhcpDetect() {
+  if (dhcp.timer) { clearTimeout(dhcp.timer); dhcp.timer = null; }
+  if (dhcp.sock) { try { dhcp.sock.close(); } catch {} dhcp.sock = null; }
+}
+
 function shutdown(code = 0) {
+  stopDhcpDetect();
   stopQuerier();
   if (membershipTimer) { clearInterval(membershipTimer); membershipTimer = null; }
   if (capInstance) { try { capInstance.close(); } catch {} capInstance = null; }
@@ -494,6 +625,8 @@ function handleCommand(line) {
     case 'stop':          shutdown(0); break;
     case 'querier-start': startQuerier(cmd); break;
     case 'querier-stop':  stopQuerier(); break;
+    case 'dhcp-detect':   startDhcpDetect(cmd.iface); break;
+    case 'dhcp-stop':     stopDhcpDetect(); break;
     case 'ping':          emit({ ev: 'pong' }); break;
     default: break;
   }
@@ -597,6 +730,36 @@ function selftest() {
   check('election: higher other -> active', shouldBeActiveQuerier('192.168.0.50', ['192.168.0.90']) === true);
   check('election: ignore self', shouldBeActiveQuerier('192.168.0.50', ['192.168.0.50']) === true);
 
+  // ── DHCP: discover build + offer parse round-trip ──
+  const xid = Buffer.from([0xde, 0xad, 0xbe, 0xef]);
+  const disc = buildDhcpDiscover(Buffer.from([2, 0, 0, 0, 0, 1]), xid);
+  check('discover op/htype', disc[0] === 1 && disc[1] === 1 && disc[2] === 6);
+  check('discover xid', disc[4] === 0xde && disc[7] === 0xef);
+  check('discover broadcast flag', disc[10] === 0x80);
+  check('discover magic', disc[236] === 0x63 && disc[239] === 0x63);
+  check('discover msgtype DISCOVER', disc[240] === 53 && disc[242] === 1);
+
+  // Synthetic OFFER: BOOTREPLY, yiaddr 10.0.0.55, opts: type=OFFER, mask, router, lease, server-id.
+  const off = Buffer.alloc(300);
+  off[0] = 2;                                     // BOOTREPLY
+  [10, 0, 0, 55].forEach((b, k) => off[16 + k] = b);   // yiaddr
+  off[236] = 0x63; off[237] = 0x82; off[238] = 0x53; off[239] = 0x63;
+  let p = 240;
+  off[p++] = 53; off[p++] = 1; off[p++] = 2;            // OFFER
+  off[p++] = 1;  off[p++] = 4; [255,255,255,0].forEach(b => off[p++] = b);   // mask
+  off[p++] = 3;  off[p++] = 4; [10,0,0,1].forEach(b => off[p++] = b);        // router
+  off[p++] = 54; off[p++] = 4; [10,0,0,1].forEach(b => off[p++] = b);        // server id
+  off[p++] = 51; off[p++] = 4; off.writeUInt32BE(86400, p); p += 4;          // lease
+  off[p++] = 255;
+  const parsed = parseDhcpReply(off);
+  check('offer parsed', !!parsed && parsed.type === 2);
+  check('offer yiaddr', parsed.yiaddr === '10.0.0.55');
+  check('offer server', parsed.server === '10.0.0.1');
+  check('offer mask', parsed.mask === '255.255.255.0');
+  check('offer router', parsed.router === '10.0.0.1');
+  check('offer lease', parsed.leaseSecs === 86400);
+  check('non-reply rejected', parseDhcpReply(Buffer.from([1, 1, 6, 0])) === null);
+
   console.log(`\nself-test: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
@@ -616,6 +779,9 @@ function main() {
   // passes the interface on the command line so capture begins immediately.
   const i = argv.indexOf('--iface');
   if (i >= 0) startCapture(argv[i + 1] || '');
+
+  const d = argv.indexOf('--dhcp');
+  if (d >= 0) startDhcpDetect(argv[d + 1] || '', true);
 }
 
 main();
@@ -623,4 +789,5 @@ main();
 module.exports = { // for external tests
   decodeIgmp, checksum16, buildIgmpV2Query, buildIpHeaderWithRA,
   buildQueryPacket, shouldBeActiveQuerier,
+  buildDhcpDiscover, parseDhcpReply,
 };

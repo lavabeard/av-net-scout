@@ -53,5 +53,16 @@ contextBridge.exposeInMainWorld('api', {
     onQuerierStopped: cb => ipcRenderer.on('igmp-querier-stopped', (_, d) => cb(d)),
   },
 
+  // Network Tools — DHCP detector
+  dhcp: {
+    detect:   (iface) => ipcRenderer.invoke('dhcp-detect-start', { iface }),
+    stop:     ()      => ipcRenderer.invoke('dhcp-detect-stop'),
+    onReady:   cb => ipcRenderer.on('dhcp-ready',   (_, d) => cb(d)),
+    onOffer:   cb => ipcRenderer.on('dhcp-offer',   (_, d) => cb(d)),
+    onDone:    cb => ipcRenderer.on('dhcp-done',    (_, d) => cb(d)),
+    onError:   cb => ipcRenderer.on('dhcp-error',   (_, d) => cb(d)),
+    onStopped: cb => ipcRenderer.on('dhcp-stopped', (_, d) => cb(d)),
+  },
+
   removeListeners: ch => ipcRenderer.removeAllListeners(ch),
 });

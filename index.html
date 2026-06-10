@@ -442,6 +442,10 @@ select{color:var(--t2);cursor:pointer}
     <svg viewBox="0 0 11 11" fill="none"><path d="M9 5.5A3.5 3.5 0 1 1 5.5 2M9 2v3.5H5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
     Auto-Rotate
   </button>
+  <button class="btn cyan" id="ringBtn" onclick="toggleRing()">
+    <svg viewBox="0 0 11 11" fill="none"><rect x="1" y="2.5" width="9" height="6.5" rx="1" stroke="currentColor" stroke-width="1"/><path d="M4 1.2 5.5 2.5 7 1.2" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
+    Channel Ring
+  </button>
   <button class="btn" onclick="probeAll()">
     <svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 2.5v3.5l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
     Probe All
@@ -493,6 +497,21 @@ select{color:var(--t2);cursor:pointer}
         Use <em>Import Names</em> to bulk-assign names from any list or document.
       </div>
     </div>
+    <!-- Channel ring (TV-style, ordered by IP) -->
+    <div id="ringBar" style="display:none;align-items:center;gap:14px;padding:14px 16px;margin:8px 0;background:linear-gradient(180deg,rgba(78,205,196,.07),rgba(255,255,255,.02));border:1px solid rgba(78,205,196,.25);border-radius:10px">
+      <button class="btn" onclick="ringGo(-1)" style="height:42px;width:42px;font-size:18px;padding:0">◀</button>
+      <div style="flex:1;min-width:0;text-align:center">
+        <div id="ringChNum" style="font-family:var(--mono);font-size:10px;color:var(--cyan);letter-spacing:.1em">CH 0 / 0</div>
+        <div id="ringChName" style="font-size:17px;font-weight:700;color:var(--text);margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">—</div>
+        <div id="ringChMeta" style="font-family:var(--mono);font-size:10px;color:var(--t2)"></div>
+      </div>
+      <button class="btn" onclick="ringGo(1)" style="height:42px;width:42px;font-size:18px;padding:0">▶</button>
+      <button class="btn primary" onclick="ringPlay()" style="height:42px">
+        <svg viewBox="0 0 11 11" fill="none"><polygon points="1,0.5 10,5.5 1,10.5" fill="currentColor"/></svg> Play
+      </button>
+      <button class="btn" onclick="closeRing()" style="height:42px">✕</button>
+    </div>
+
     <div class="grid" id="grid" style="display:none"></div>
   </div>
 
@@ -554,6 +573,25 @@ select{color:var(--t2);cursor:pointer}
         Requires the detector running. Sends IGMP general queries (heartbeat) to keep multicast alive on
         snooping switches, plus group-specific queries on fast-leave. Defers to a lower-IP querier unless forced.
       </div>
+    </div>
+
+    <!-- DHCP scope detector -->
+    <div style="background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.07);border-radius:8px;padding:14px 16px;margin-top:8px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <span style="font-size:11px;font-weight:600;letter-spacing:.3px">DHCP SCOPE DETECTOR</span>
+        <span style="font-size:9px;color:var(--t3)">— read-only: broadcasts DHCPDISCOVER, never takes a lease</span>
+        <span id="dhcpPill" class="badge" style="font-size:9px;margin-left:auto">Off</span>
+      </div>
+      <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field"><label>NIC</label>
+          <select id="dNic" style="width:200px"><option value="">Auto (default)</option></select></div>
+        <button class="btn cyan" id="dhcpBtn" onclick="toggleDhcp()" style="margin-left:auto">Detect DHCP</button>
+      </div>
+      <div id="dhcpStatus" style="font-family:var(--mono);font-size:10px;color:var(--t3);line-height:1.7;margin-top:10px">
+        Detects DHCP servers on the segment and the scope they offer — server IP, offered address, subnet mask,
+        gateway, DNS, lease, and a pool-range hint. More than one responder = a possible rogue DHCP server.
+      </div>
+      <div id="dhcpResults" style="margin-top:8px"></div>
     </div>
 
     <div class="guide" id="toolsGuide">
@@ -713,13 +751,35 @@ function bindEvents() {
   window.api.igmp.onQuerierState(renderQuerierState);
   window.api.igmp.onQuerySent(d => { lastQueryCount = d.count; if (querierOn) renderQuerierState({ running: true, active: true, count: d.count }); });
   window.api.igmp.onQuerierStopped(() => { finalizeQuerierStop(); log('info', 'IGMP querier stopped'); });
+  window.api.dhcp.onReady(() => setDhcpPill('scanning'));
+  window.api.dhcp.onOffer(d => { dhcpOffers.push(d); renderDhcp(); });
+  window.api.dhcp.onDone(d => {
+    setDhcpPill(d.count ? 'done' : 'error');
+    let msg = d.count
+      ? 'DHCP: ' + d.count + ' server' + (d.count === 1 ? '' : 's') + ' responded'
+        + (d.poolMin && d.poolMax ? ' · offered ' + d.poolMin + '–' + d.poolMax : '')
+      : 'DHCP: no server responded';
+    log(d.count ? 'ok' : 'warn', msg);
+    if (d.count > 1) log('warn', '⚠ Multiple DHCP servers responded — possible rogue DHCP server!');
+    document.getElementById('dhcpStatus').textContent = msg;
+    finalizeDhcp();
+  });
+  window.api.dhcp.onError(d => { setDhcpPill('error'); log('err', 'DHCP: ' + (d.message || d.code || 'error')); finalizeDhcp(); });
+  window.api.dhcp.onStopped(() => finalizeDhcp());
+  // Channel-ring keyboard nav (←/→ to flip, Enter to play)
+  window.addEventListener('keydown', e => {
+    if (!ringOpen) return;
+    if (e.key === 'ArrowLeft') { ringGo(-1); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { ringGo(1); e.preventDefault(); }
+    else if (e.key === 'Enter') { ringPlay(); }
+  });
 }
 
 let nicNameByAddr = {};   // "192.168.1.50" → "eth0", for VLC --miface
 function populateNics(nics) {
   nicNameByAddr = {};
   (nics||[]).forEach(n => { nicNameByAddr[n.address] = n.name; });
-  ['rNic','sNic','nNic','tNic'].forEach(id => {
+  ['rNic','sNic','nNic','tNic','dNic'].forEach(id => {
     const sel = document.getElementById(id);
     (nics||[]).forEach(n => {
       const o = document.createElement('option');
@@ -891,6 +951,73 @@ function renderQuerierState(d) {
   if (d.others && d.others.length) parts.push('other queriers: ' + d.others.join(', '));
   if (d.reason) parts.push('(' + d.reason + ')');
   document.getElementById('qStatus').textContent = parts.join('  ·  ');
+}
+
+// ── Network Tools: DHCP scope detector ──────────────────────────────────────
+let dhcpRunning = false;
+let dhcpOffers = [];
+
+function setDhcpPill(state) {
+  const p = document.getElementById('dhcpPill');
+  const m = { off: ['Off', 'badge'], scanning: ['Detecting…', 'badge warn'], done: ['Done', 'badge ok'], error: ['None / Error', 'badge warn'] };
+  const [t, c] = m[state] || m.off;
+  p.textContent = t; p.className = c;
+}
+
+function toggleDhcp() {
+  if (dhcpRunning) { window.api.dhcp.stop(); finalizeDhcp(); return; }
+  dhcpRunning = true;
+  dhcpOffers = [];
+  setDhcpPill('scanning');
+  document.getElementById('dhcpBtn').innerHTML = '■ Stop';
+  document.getElementById('dhcpResults').innerHTML = '';
+  document.getElementById('dhcpStatus').textContent = 'Broadcasting DHCPDISCOVER on UDP 67… (may prompt for administrator access)';
+  log('info', 'DHCP detect starting' + (v('dNic') ? ' on ' + v('dNic') : '') + ' — may prompt for administrator access');
+  window.api.dhcp.detect(v('dNic')).then(r => {
+    if (r && r.error) {
+      log('err', 'DHCP: ' + (r.error === 'already_running' ? 'already running' : (r.message || r.error)));
+      setDhcpPill('error'); finalizeDhcp();
+    }
+  });
+}
+
+function finalizeDhcp() {
+  dhcpRunning = false;
+  document.getElementById('dhcpBtn').innerHTML = 'Detect DHCP';
+}
+
+function fmtLease(s) {
+  if (!s) return '?';
+  if (s % 86400 === 0) return (s / 86400) + 'd';
+  if (s >= 86400) return (s / 86400).toFixed(1) + 'd';
+  if (s >= 3600) return (s / 3600).toFixed(s % 3600 ? 1 : 0) + 'h';
+  if (s >= 60) return Math.round(s / 60) + 'm';
+  return s + 's';
+}
+
+function renderDhcp() {
+  const el = document.getElementById('dhcpResults');
+  if (!dhcpOffers.length) { el.innerHTML = ''; return; }
+  const byServer = {};
+  for (const o of dhcpOffers) (byServer[o.server || '?'] = byServer[o.server || '?'] || []).push(o);
+  const servers = Object.keys(byServer);
+  let h = '';
+  if (servers.length > 1) h += '<div style="color:var(--amber);font-family:var(--mono);font-size:11px;margin-bottom:6px">⚠ ' + servers.length + ' DHCP servers responding — possible rogue DHCP</div>';
+  for (const server of servers) {
+    const offs = byServer[server];
+    const o = offs[0];
+    const yiaddrs = [...new Set(offs.map(x => x.yiaddr).filter(Boolean))];
+    h += '<div style="border:1px solid var(--bd);border-radius:6px;padding:10px 12px;margin-bottom:6px;font-family:var(--mono);font-size:11px">';
+    h += '<div style="font-weight:600;color:var(--cyan)">DHCP server ' + esc(server) + '</div>';
+    h += '<div style="color:var(--t2);line-height:1.9;margin-top:4px">';
+    h += 'offered: ' + esc(yiaddrs.join(', ') || '?') + '<br>';
+    h += 'mask ' + esc(o.mask || '?') + '  ·  gateway ' + esc(o.router || '?') + '<br>';
+    if (o.dns && o.dns.length) h += 'dns ' + esc(o.dns.join(', ')) + '<br>';
+    if (o.domain) h += 'domain ' + esc(o.domain) + '<br>';
+    if (o.leaseSecs) h += 'lease ' + fmtLease(o.leaseSecs);
+    h += '</div></div>';
+  }
+  el.innerHTML = h;
 }
 
 function onIgmpError(d) {
@@ -1162,6 +1289,7 @@ function upsertStream(s) {
   document.getElementById('grid').style.display = '';
   updateResultsTb();
   refreshAllSources();
+  if (ringOpen) { ringRebuild(); ringRenderCurrent(); }
 }
 
 function upsertNetStream(s) {
@@ -1821,6 +1949,65 @@ function stopRotate() {
   document.getElementById('rotFill').style.width = '0%';
 }
 
+// ── Channel Ring (TV-style, ordered by IP) ──────────────────────────────────
+let ringOpen = false;
+let ringList = [];
+let ringIdx = 0;
+
+function ringIpNum(s) {
+  return (s.ip || '').split('.').reduce((a, o) => a * 256 + (parseInt(o, 10) || 0), 0);
+}
+
+function toggleRing() { ringOpen ? closeRing() : openRing(); }
+
+function openRing() {
+  ringRebuild();
+  if (!ringList.length) { log('warn', 'No streams yet — run a Range Scan first'); return; }
+  ringOpen = true;
+  if (ringIdx >= ringList.length) ringIdx = 0;
+  document.getElementById('ringBar').style.display = 'flex';
+  ringRenderCurrent();
+}
+
+function closeRing() {
+  ringOpen = false;
+  document.getElementById('ringBar').style.display = 'none';
+}
+
+function ringRebuild() {
+  const prevKey = ringList[ringIdx] && ringList[ringIdx].key;
+  ringList = [...streams.values()].sort((a, b) => ringIpNum(a) - ringIpNum(b) || ((a.port || 0) - (b.port || 0)));
+  if (prevKey) { const i = ringList.findIndex(s => s.key === prevKey); if (i >= 0) ringIdx = i; }
+  if (ringIdx >= ringList.length) ringIdx = 0;
+}
+
+function ringGo(delta) {
+  if (!ringList.length) return;
+  ringIdx = (ringIdx + delta + ringList.length) % ringList.length;   // wraps like a TV ring
+  ringRenderCurrent();
+}
+
+function ringRenderCurrent() {
+  const s = ringList[ringIdx];
+  if (!s) return;
+  const name = nameStore[nameKey(s)] || s.name || '';
+  document.getElementById('ringChNum').textContent = 'CH ' + (ringIdx + 1) + ' / ' + ringList.length;
+  document.getElementById('ringChName').textContent = (name ? name + '  ·  ' : '') + s.ip + ':' + s.port;
+  const meta = (s.result && s.result.ok && s.result.raw) ? parseProbe(s.result.raw) : null;
+  let m = '';
+  if (meta) {
+    if (meta.video) m += [meta.video.codec, meta.video.res, meta.video.fps, meta.video.br].filter(Boolean).join(' · ');
+    if (meta.audio) m += (m ? '    ' : '') + [meta.audio.codec, meta.audio.ch].filter(Boolean).join(' ');
+    if (meta.captions && meta.captions.length) m += '    CC: ' + meta.captions.map(c => c.label).join(', ');
+  } else { m = (s.result && s.result.ok) ? 'live' : 'no signal'; }
+  document.getElementById('ringChMeta').textContent = m || '—';
+}
+
+function ringPlay() {
+  const s = ringList[ringIdx];
+  if (s) launchOne(s.url, s.iface);
+}
+
 // ── Clear ─────────────────────────────────────────────────────────────────────
 function clearAll() {
   streams.clear(); streamSeq = 0; window._ffWarn = false;
@@ -1829,6 +2016,7 @@ function clearAll() {
   document.getElementById('guide').style.display = 'flex';
   document.getElementById('resultsTb').style.display = 'none';
   document.getElementById('allSrcDetail').style.display = 'none';
+  closeRing(); ringList = []; ringIdx = 0;
   refreshAllSources();
   setStatus(false, 'Cleared');
 }

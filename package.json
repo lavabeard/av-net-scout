@@ -1,6 +1,6 @@
 {
   "name": "multicast-ring-analyzer",
-  "version": "2.4.2",
+  "version": "2.5.0",
   "description": "Multicast & network stream scanner — range scan, SAP/mDNS discovery, RTSP/RTMP/HLS/RTP/NDI/Dante, ffprobe metadata with closed-caption detection, VLC launch",
   "main": "main.js",
   "author": {

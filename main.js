@@ -42,7 +42,7 @@ function createWindow() {
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on('before-quit', () => stopIgmpHelper());
+app.on('before-quit', () => { stopIgmpHelper(); stopDhcpHelper(); });
 
 // ── ffprobe ───────────────────────────────────────────────────────────────────
 function probeUrl(url, timeoutMs) {
@@ -504,6 +504,7 @@ ipcMain.handle('stop-mdns', () => {
 // stays unprivileged. We relay the helper's line-delimited JSON events to the
 // renderer. See docs/network-tools-design.md.
 let igmpHelper = null;
+let dhcpHelper = null;
 
 // Resolve where the helper's Node binary + script live, returning real paths the
 // root (pkexec'd) process can actually read.
@@ -547,37 +548,25 @@ function resolveHelper() {
 // Build the (command, args) to launch the helper, choosing an elevation wrapper
 // by platform. AVNS_NO_ELEVATE=1 runs it unprivileged (dev/CI only — pcap will
 // fail with eaccess, which the UI surfaces).
-function buildHelperSpawn(nodeBin, helperPath, iface) {
-  const helperArgs = [helperPath];
-  if (iface) helperArgs.push('--iface', iface);
+function buildHelperSpawn(nodeBin, helperPath, extraArgs = []) {
+  const helperArgs = [helperPath, ...extraArgs];
   if (process.env.AVNS_NO_ELEVATE === '1') return { cmd: nodeBin, args: helperArgs };
   if (process.platform === 'linux')  return { cmd: 'pkexec', args: [nodeBin, ...helperArgs] };
   if (process.platform === 'darwin') return { cmd: 'sudo',   args: ['-n', nodeBin, ...helperArgs] };
   return { cmd: nodeBin, args: helperArgs };
 }
 
-function stopIgmpHelper() {
-  if (!igmpHelper) return;
-  const p = igmpHelper;
-  igmpHelper = null;
-  // Closing stdin is the reliable stop signal even when the child is root and
-  // we (unprivileged) can't signal it; also try SIGTERM as a backstop.
-  try { p.stdin.end(); } catch {}
-  try { p.kill('SIGTERM'); } catch {}
-}
-
-ipcMain.handle('igmp-detect-start', (event, { iface } = {}) => {
-  if (igmpHelper) return { error: 'already_running' };
-  const send = (ch, d) => { if (!event.sender.isDestroyed()) event.sender.send(ch, d); };
+// Spawn the privileged helper with auto-start args, relaying its JSON events to
+// the renderer. Shared by the IGMP detector and the DHCP detector.
+function spawnHelper(extraArgs, send, opts) {
   let resolved;
   try { resolved = resolveHelper(); }
   catch (e) { return { error: 'stage_failed', message: 'could not prepare privileged helper: ' + e.message }; }
-  const { cmd, args } = buildHelperSpawn(resolved.nodeBin, resolved.helperPath, iface);
+  const { cmd, args } = buildHelperSpawn(resolved.nodeBin, resolved.helperPath, extraArgs);
 
   let proc;
   try { proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] }); }
   catch (e) { return { error: 'spawn_failed', message: e.message }; }
-  igmpHelper = proc;
 
   let buf = '';
   proc.stdout.on('data', d => {
@@ -592,33 +581,51 @@ ipcMain.handle('igmp-detect-start', (event, { iface } = {}) => {
   });
   proc.stderr.on('data', d => {
     const msg = d.toString().trim();
-    // pkexec/sudo auth chatter on stderr — surface it but don't treat as fatal.
-    if (msg) send('igmp-error', { message: msg, source: 'stderr' });
+    if (msg) send(opts.errCh, { message: msg, source: 'stderr' });
   });
   proc.on('error', e => {
-    // e.g. pkexec/sudo not installed, or auth dismissed.
     let message = e.message;
     if (/ENOENT/.test(e.message)) {
-      if (process.platform === 'linux')
-        message = `${cmd} not found — install it (e.g. "sudo apt install pkexec" or "policykit-1"), then retry`;
-      else
-        message = `${cmd} not found on PATH`;
+      message = process.platform === 'linux'
+        ? `${cmd} not found — install it (e.g. "sudo apt install pkexec" or "policykit-1"), then retry`
+        : `${cmd} not found on PATH`;
     }
-    send('igmp-error', { code: 'elevation_failed', message });
-    igmpHelper = null;
+    send(opts.errCh, { code: 'elevation_failed', message });
+    if (opts.onExit) opts.onExit(proc);
   });
   proc.on('exit', (code, sig) => {
-    send('igmp-stopped', { code, signal: sig });
-    if (igmpHelper === proc) igmpHelper = null;
+    send(opts.stoppedCh, { code, signal: sig });
+    if (opts.onExit) opts.onExit(proc);
   });
+  return { proc };
+}
 
+function killHelper(p) {
+  if (!p) return;
+  // Closing stdin is the reliable stop signal even when the child is root and
+  // we (unprivileged) can't signal it; SIGTERM is a backstop.
+  try { p.stdin.end(); } catch {}
+  try { p.kill('SIGTERM'); } catch {}
+}
+function stopIgmpHelper() { const p = igmpHelper; igmpHelper = null; killHelper(p); }
+function stopDhcpHelper() { const p = dhcpHelper; dhcpHelper = null; killHelper(p); }
+
+// ── IGMP detector ────────────────────────────────────────────────────────────
+ipcMain.handle('igmp-detect-start', (event, { iface } = {}) => {
+  if (igmpHelper) return { error: 'already_running' };
+  const send = (ch, d) => { if (!event.sender.isDestroyed()) event.sender.send(ch, d); };
+  const res = spawnHelper(['--iface', iface].filter(Boolean), send, {
+    errCh: 'igmp-error', stoppedCh: 'igmp-stopped',
+    onExit: proc => { if (igmpHelper === proc) igmpHelper = null; },
+  });
+  if (res.error) return res;
+  igmpHelper = res.proc;
   return { ok: true };
 });
-
 ipcMain.handle('igmp-detect-stop', () => { stopIgmpHelper(); return { ok: true }; });
 
-// Querier control reuses the detector's helper process (the querier needs the
-// capture for election + fast-leave), so we drive it over the helper's stdin.
+// Querier reuses the detector's helper process (it needs the capture for
+// election + fast-leave), driven over that helper's stdin.
 ipcMain.handle('igmp-querier-start', (_e, opts = {}) => {
   if (!igmpHelper) return { error: 'detector_not_running' };
   try { igmpHelper.stdin.write(JSON.stringify({ cmd: 'querier-start', ...opts }) + '\n'); }
@@ -629,6 +636,20 @@ ipcMain.handle('igmp-querier-stop', () => {
   if (igmpHelper) { try { igmpHelper.stdin.write(JSON.stringify({ cmd: 'querier-stop' }) + '\n'); } catch {} }
   return { ok: true };
 });
+
+// ── DHCP detector (its own short-lived helper; exits itself after the probe) ──
+ipcMain.handle('dhcp-detect-start', (event, { iface } = {}) => {
+  if (dhcpHelper) return { error: 'already_running' };
+  const send = (ch, d) => { if (!event.sender.isDestroyed()) event.sender.send(ch, d); };
+  const res = spawnHelper(['--dhcp', iface].filter(Boolean), send, {
+    errCh: 'dhcp-error', stoppedCh: 'dhcp-stopped',
+    onExit: proc => { if (dhcpHelper === proc) dhcpHelper = null; },
+  });
+  if (res.error) return res;
+  dhcpHelper = res.proc;
+  return { ok: true };
+});
+ipcMain.handle('dhcp-detect-stop', () => { stopDhcpHelper(); return { ok: true }; });
 
 function relayHelperEvent(send, ev) {
   switch (ev.ev) {
@@ -641,7 +662,10 @@ function relayHelperEvent(send, ev) {
     case 'querier-state':    send('igmp-querier-state', ev); break;
     case 'query-sent':       send('igmp-query-sent', ev); break;
     case 'querier-stopped':  send('igmp-querier-stopped', ev); break;
-    case 'error':            send('igmp-error', ev); break;
+    case 'dhcp-ready':       send('dhcp-ready', ev); break;
+    case 'dhcp-offer':       send('dhcp-offer', ev); break;
+    case 'dhcp-done':        send('dhcp-done', ev); break;
+    case 'error':            send(/^dhcp/.test(ev.code || '') ? 'dhcp-error' : 'igmp-error', ev); break;
     case 'log':              break; // helper diagnostics — ignored in the UI for now
     default:                 break;
   }
