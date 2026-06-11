@@ -1,6 +1,6 @@
 {
   "name": "multicast-ring-analyzer",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Multicast & network stream scanner — range scan, SAP/mDNS discovery, RTSP/RTMP/HLS/RTP/NDI/Dante, ffprobe metadata with closed-caption detection, VLC launch",
   "main": "main.js",
   "author": {
@@ -16,7 +16,9 @@
   },
   "dependencies": {
     "cap": "^0.2.1",
-    "raw-socket": "^1.8.1"
+    "mpegts.js": "^1.8.0",
+    "raw-socket": "^1.8.1",
+    "ws": "^8.21.0"
   },
   "overrides": {
     "raw-socket": {
@@ -41,7 +43,10 @@
       "scripts/"
     ],
     "extraResources": [
-      { "from": "vendor/node", "to": "node" }
+      {
+        "from": "vendor/node",
+        "to": "node"
+      }
     ],
     "linux": {
       "target": [
@@ -54,8 +59,15 @@
     },
     "deb": {
       "depends": [
-        "libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6",
-        "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0",
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
         "libpcap0.8"
       ]
     }

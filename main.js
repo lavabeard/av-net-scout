@@ -18,6 +18,18 @@ function findFfprobe() {
   return 'ffprobe';
 }
 
+function findFfmpeg() {
+  if (process.platform === 'win32') {
+    const c = ['C:\\ffmpeg\\bin\\ffmpeg.exe','C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe','C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe','C:\\tools\\ffmpeg\\bin\\ffmpeg.exe'];
+    for (const p of c) if (fs.existsSync(p)) return p;
+    return 'ffmpeg.exe';
+  }
+  if (process.platform === 'darwin') {
+    for (const p of ['/opt/homebrew/bin/ffmpeg','/usr/local/bin/ffmpeg','/usr/bin/ffmpeg']) if (fs.existsSync(p)) return p;
+  }
+  return 'ffmpeg';
+}
+
 function findVlc() {
   if (process.platform === 'win32') {
     for (const p of ['C:\\Program Files\\VideoLAN\\VLC\\vlc.exe','C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe']) if (fs.existsSync(p)) return p;
@@ -42,7 +54,7 @@ function createWindow() {
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on('before-quit', () => { stopIgmpHelper(); stopDhcpHelper(); });
+app.on('before-quit', () => { stopIgmpHelper(); stopDhcpHelper(); stopPlayerFfmpeg(); });
 
 // ── ffprobe ───────────────────────────────────────────────────────────────────
 function probeUrl(url, timeoutMs) {
@@ -670,6 +682,70 @@ function relayHelperEvent(send, ev) {
     default:                 break;
   }
 }
+
+// ── Embedded player bridge (ffmpeg remux → localhost WebSocket → mpegts.js) ───
+// Chromium cannot open udp/rtp/rtsp/MPEG-TS, so we remux the selected stream to
+// MPEG-TS with ffmpeg (-c copy, no re-encode → original quality) and pipe it over
+// a 127.0.0.1 WebSocket that mpegts.js plays in the renderer.
+let playerWss = null, playerWsPort = 0, playerFfmpeg = null;
+const playerClients = new Set();
+
+function ensurePlayerWss() {
+  if (playerWss) return Promise.resolve(playerWsPort);
+  return new Promise((resolve, reject) => {
+    let WebSocketServer;
+    try { ({ WebSocketServer } = require('ws')); }
+    catch (e) { reject(new Error('ws module missing: ' + e.message)); return; }
+    const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    wss.on('connection', ws => {
+      playerClients.add(ws);
+      ws.on('close',  () => playerClients.delete(ws));
+      ws.on('error',  () => playerClients.delete(ws));
+    });
+    wss.on('listening', () => { playerWss = wss; playerWsPort = wss.address().port; resolve(playerWsPort); });
+    wss.on('error', reject);
+  });
+}
+
+function stopPlayerFfmpeg() {
+  if (!playerFfmpeg) return;
+  const p = playerFfmpeg; playerFfmpeg = null;
+  try { p.kill('SIGKILL'); } catch {}
+}
+
+function startPlayerFfmpeg(url, send) {
+  stopPlayerFfmpeg();
+  const ff = findFfmpeg();
+  const pre = /^rtsp:/i.test(url) ? ['-rtsp_transport', 'tcp'] : [];
+  // Remux (copy) the incoming TS/H.264 to clean MPEG-TS on stdout.
+  const args = [...pre, '-fflags', 'nobuffer', '-flags', 'low_delay',
+    '-i', url, '-c', 'copy', '-f', 'mpegts', '-muxdelay', '0', 'pipe:1'];
+  let proc;
+  try { proc = spawn(ff, args, { stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch (e) { send('player-error', { message: 'ffmpeg spawn failed: ' + e.message }); return; }
+  playerFfmpeg = proc;
+  proc.stdout.on('data', chunk => {
+    for (const ws of playerClients) if (ws.readyState === 1) { try { ws.send(chunk); } catch {} }
+  });
+  let errTail = '';
+  proc.stderr.on('data', d => { errTail = (errTail + d.toString()).slice(-500); });
+  proc.on('error', e => send('player-error', { message: e.message }));
+  proc.on('exit', (code, sig) => {
+    if (playerFfmpeg === proc) playerFfmpeg = null;
+    if (code && !sig) send('player-error', { message: 'ffmpeg exited (' + code + '): ' + (errTail.trim().split('\n').pop() || '') });
+  });
+}
+
+ipcMain.handle('player-start', async (event, { url } = {}) => {
+  if (!url) return { error: 'no_url' };
+  const send = (ch, d) => { if (!event.sender.isDestroyed()) event.sender.send(ch, d); };
+  let port;
+  try { port = await ensurePlayerWss(); }
+  catch (e) { return { error: 'ws_failed', message: e.message }; }
+  startPlayerFfmpeg(url, send);
+  return { ok: true, port };
+});
+ipcMain.handle('player-stop', () => { stopPlayerFfmpeg(); return { ok: true }; });
 
 // ── Misc IPC ──────────────────────────────────────────────────────────────────
 // Accepts either a bare url string (legacy) or { url, miface } where miface is

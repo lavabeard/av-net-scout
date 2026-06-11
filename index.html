@@ -506,9 +506,10 @@ select{color:var(--t2);cursor:pointer}
         <div id="ringChMeta" style="font-family:var(--mono);font-size:10px;color:var(--t2)"></div>
       </div>
       <button class="btn" onclick="ringGo(1)" style="height:42px;width:42px;font-size:18px;padding:0">▶</button>
-      <button class="btn primary" onclick="ringPlay()" style="height:42px">
-        <svg viewBox="0 0 11 11" fill="none"><polygon points="1,0.5 10,5.5 1,10.5" fill="currentColor"/></svg> Play
+      <button class="btn primary" onclick="ringPlayInApp()" style="height:42px" title="Play inside the app">
+        <svg viewBox="0 0 11 11" fill="none"><polygon points="1,0.5 10,5.5 1,10.5" fill="currentColor"/></svg> In-App
       </button>
+      <button class="btn" onclick="ringPlay()" style="height:42px" title="Play in external VLC">VLC</button>
       <button class="btn" onclick="closeRing()" style="height:42px">✕</button>
     </div>
 
@@ -684,6 +685,31 @@ select{color:var(--t2);cursor:pointer}
   </div>
 </div>
 
+<!-- Embedded player (ffmpeg remux → WebSocket → mpegts.js) -->
+<div id="playerModal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.82);align-items:center;justify-content:center">
+  <div style="width:90vw;max-width:1180px;background:var(--bg2);border:1px solid var(--bd2);border-radius:10px;overflow:hidden;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--bd)">
+      <span id="plChNum" style="font-family:var(--mono);font-size:11px;color:var(--cyan)">CH 0 / 0</span>
+      <span id="plChName" style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">—</span>
+      <button class="btn" onclick="playerChannel(-1)" title="Channel down">▲ Ch-</button>
+      <button class="btn" onclick="playerChannel(1)" title="Channel up">▼ Ch+</button>
+      <button class="btn" id="plSubsBtn" onclick="togglePlayerSubs()">CC: Off</button>
+      <button class="btn red" onclick="closePlayer()">✕ Close</button>
+    </div>
+    <div style="display:flex;min-height:0">
+      <div style="flex:1;background:#000;display:flex;align-items:center;justify-content:center;min-height:300px">
+        <video id="playerVideo" style="width:100%;max-height:62vh;background:#000" autoplay muted controls></video>
+      </div>
+      <div style="width:300px;border-left:1px solid var(--bd);padding:12px 14px;overflow-y:auto;font-family:var(--mono);font-size:11px">
+        <div style="color:var(--t2);font-size:10px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">Stream info</div>
+        <div id="plInfo" style="color:var(--t2);line-height:1.9"></div>
+        <div id="plStatus" style="color:var(--t3);margin-top:10px;line-height:1.6"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="node_modules/mpegts.js/dist/mpegts.js"></script>
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
 const streams    = new Map();
@@ -766,8 +792,19 @@ function bindEvents() {
   });
   window.api.dhcp.onError(d => { setDhcpPill('error'); log('err', 'DHCP: ' + (d.message || d.code || 'error')); finalizeDhcp(); });
   window.api.dhcp.onStopped(() => finalizeDhcp());
-  // Channel-ring keyboard nav (←/→ to flip, Enter to play)
+  window.api.player.onError(d => {
+    const st = document.getElementById('plStatus');
+    if (st) st.textContent = 'Player error: ' + (d.message || 'unknown');
+    log('err', 'Player: ' + (d.message || 'error'));
+  });
+  // Keyboard nav: player open → ↑/↓ channel, Esc close; else ring → ←/→ flip, Enter play
   window.addEventListener('keydown', e => {
+    if (document.getElementById('playerModal').style.display === 'flex') {
+      if (e.key === 'ArrowUp') { playerChannel(-1); e.preventDefault(); }
+      else if (e.key === 'ArrowDown') { playerChannel(1); e.preventDefault(); }
+      else if (e.key === 'Escape') { closePlayer(); }
+      return;
+    }
     if (!ringOpen) return;
     if (e.key === 'ArrowLeft') { ringGo(-1); e.preventDefault(); }
     else if (e.key === 'ArrowRight') { ringGo(1); e.preventDefault(); }
@@ -2006,6 +2043,118 @@ function ringRenderCurrent() {
 function ringPlay() {
   const s = ringList[ringIdx];
   if (s) launchOne(s.url, s.iface);
+}
+
+function ringPlayInApp() {
+  if (!ringList.length) return;
+  openPlayer(ringList, ringIdx);
+}
+
+// ── Embedded player (mpegts.js fed by the ffmpeg remux bridge) ───────────────
+let mpegtsPlayer = null;
+let playerList = [];
+let playerIdx = 0;
+let playerSubsOn = false;
+
+function openPlayer(list, idx) {
+  if (!window.mpegts || !mpegts.isSupported()) { log('err', 'In-app player not supported in this build'); return; }
+  playerList = list.slice();
+  playerIdx = Math.max(0, Math.min(idx, playerList.length - 1));
+  document.getElementById('playerModal').style.display = 'flex';
+  playerPlayCurrent();
+}
+
+function closePlayer() {
+  document.getElementById('playerModal').style.display = 'none';
+  destroyMpegts();
+  try { window.api.player.stop(); } catch {}
+}
+
+function destroyMpegts() {
+  if (mpegtsPlayer) { try { mpegtsPlayer.destroy(); } catch {} mpegtsPlayer = null; }
+}
+
+async function playerPlayCurrent() {
+  const s = playerList[playerIdx];
+  if (!s) return;
+  const name = nameStore[nameKey(s)] || s.name || '';
+  document.getElementById('plChNum').textContent = 'CH ' + (playerIdx + 1) + ' / ' + playerList.length;
+  document.getElementById('plChName').textContent = (name ? name + '  ·  ' : '') + (s.ip ? s.ip + ':' + s.port : s.url);
+  renderPlayerInfo(s);
+  document.getElementById('plStatus').textContent = 'Starting ffmpeg remux…';
+  destroyMpegts();
+  let r;
+  try { r = await window.api.player.start(s.url); } catch (e) { r = { error: e.message }; }
+  if (!r || r.error) { document.getElementById('plStatus').textContent = 'Player error: ' + ((r && (r.message || r.error)) || 'failed to start'); return; }
+  const video = document.getElementById('playerVideo');
+  mpegtsPlayer = mpegts.createPlayer(
+    { type: 'mpegts', isLive: true, url: 'ws://127.0.0.1:' + r.port },
+    { liveBufferLatencyChasing: true, lazyLoad: false });
+  mpegtsPlayer.attachMediaElement(video);
+  mpegtsPlayer.on(mpegts.Events.ERROR, (t, d) => { document.getElementById('plStatus').textContent = 'Playback error: ' + t + ' / ' + d; });
+  mpegtsPlayer.on(mpegts.Events.MEDIA_INFO, () => { document.getElementById('plStatus').textContent = 'Playing.'; });
+  mpegtsPlayer.load();
+  video.play().catch(() => {});
+}
+
+function playerChannel(delta) {
+  if (!playerList.length) return;
+  playerIdx = (playerIdx + delta + playerList.length) % playerList.length;   // channel up/down, wraps
+  if (ringOpen) { ringIdx = Math.min(playerIdx, ringList.length - 1); ringRenderCurrent(); }
+  playerPlayCurrent();
+}
+
+function togglePlayerSubs() {
+  playerSubsOn = !playerSubsOn;
+  document.getElementById('plSubsBtn').textContent = 'CC: ' + (playerSubsOn ? 'On' : 'Off');
+  renderPlayerInfo(playerList[playerIdx]);
+  if (playerSubsOn) log('info', 'CC: live caption rendering (burn-in) is the next step — showing detected caption tracks for now.');
+}
+
+// MPEG-TS PIDs come straight from ffprobe — each stream's "id" is its PID.
+function pidInfo(raw) {
+  if (!raw) return null;
+  const out = { program: null, pmt: null, streams: [] };
+  const progs = raw.programs || [];
+  if (progs.length) {
+    const p = progs[0];
+    out.program = p.program_id;
+    out.pmt = p.pmt_pid;
+    for (const st of (p.streams || [])) out.streams.push({ pid: st.id, type: st.codec_type, codec: st.codec_name });
+  } else {
+    for (const st of (raw.streams || [])) out.streams.push({ pid: st.id, type: st.codec_type, codec: st.codec_name });
+  }
+  return out;
+}
+
+function fmtPid(pid) {
+  if (pid == null) return '?';
+  const n = (typeof pid === 'string') ? parseInt(pid) : pid;
+  if (isNaN(n)) return String(pid);
+  return '0x' + n.toString(16).toUpperCase() + ' (' + n + ')';
+}
+
+function renderPlayerInfo(s) {
+  const el = document.getElementById('plInfo');
+  if (!el) return;
+  if (!s) { el.innerHTML = ''; return; }
+  const r = s.result || {};
+  const meta = (r.ok && r.raw) ? parseProbe(r.raw) : null;
+  const pids = (r.ok && r.raw) ? pidInfo(r.raw) : null;
+  let h = '<div style="color:var(--text);word-break:break-all">' + esc(s.url || '') + '</div>';
+  if (meta && meta.video) h += '<div style="margin-top:6px">VIDEO  ' + [meta.video.codec, meta.video.res, meta.video.fps, meta.video.br].filter(Boolean).map(esc).join(' · ') + '</div>';
+  if (meta && meta.audio) h += '<div>AUDIO  ' + [meta.audio.codec, meta.audio.sr, meta.audio.ch, meta.audio.br].filter(Boolean).map(esc).join(' · ') + '</div>';
+  if (pids && pids.streams.length) {
+    h += '<div style="margin-top:8px;color:var(--t3)">PIDs' + (pids.pmt != null ? '  ·  PMT ' + fmtPid(pids.pmt) : '') + '</div>';
+    for (const st of pids.streams) h += '<div>· ' + esc(st.type || '?') + ' ' + esc(st.codec || '') + '  ' + fmtPid(st.pid) + '</div>';
+  }
+  if (meta && meta.captions && meta.captions.length) {
+    h += '<div style="margin-top:8px;color:' + (playerSubsOn ? 'var(--green)' : 'var(--t3)') + '">CLOSED CAPTIONS' + (playerSubsOn ? ' (on)' : '') + '</div>';
+    for (const c of meta.captions) h += '<div>· ' + esc(c.label) + (c.lang ? '  [' + esc(c.lang) + ']' : '') + '</div>';
+  } else {
+    h += '<div style="margin-top:8px;color:var(--t3)">No caption tracks detected.</div>';
+  }
+  el.innerHTML = h;
 }
 
 // ── Clear ─────────────────────────────────────────────────────────────────────
