@@ -1196,14 +1196,16 @@ async function onSapAnnounce(d) {
   if (!d.address||!d.port) return;
   const key='sap:'+d.address+':'+d.port;
   const url='udp://@'+d.address+':'+d.port;
-  log('info','SAP: "'+(d.name||key)+'" → '+url);
+  const tag = [d.flavor, d.addrType, d.ptp].filter(Boolean).join(' · ');
+  log('info','SAP: "'+(d.name||key)+'" → '+url+(tag?'   ['+tag+']':''));
   if (streams.has(key)) return;
   const nk=d.address+':'+d.port;
   if (d.name && !nameStore[nk]) { nameStore[nk]=d.name; saveNames(); }
-  upsertStream({key,ip:d.address,port:d.port,url,source:'sap',result:{probing:true},seq:streamSeq++,iface:sapIface});
+  const extra = { flavor:d.flavor, addrType:d.addrType, ptp:d.ptp, protocol:(d.flavor||'sap').toLowerCase() };
+  upsertStream({key,ip:d.address,port:d.port,url,source:'sap',result:{probing:true},seq:streamSeq++,iface:sapIface,...extra});
   let result;
   try { result=await window.api.probeStream(url); } catch { result={error:'api_unavailable'}; }
-  upsertStream({key,ip:d.address,port:d.port,url,source:'sap',result,seq:streams.get(key)?.seq??streamSeq++,iface:sapIface});
+  upsertStream({key,ip:d.address,port:d.port,url,source:'sap',result,seq:streams.get(key)?.seq??streamSeq++,iface:sapIface,...extra});
   updateResultsTb();
   if (result.ok) log('ok','SAP probe OK: '+d.address+':'+d.port+(d.name?' "'+d.name+'"':''));
   else log('warn','SAP: no signal on '+d.address+':'+d.port);
@@ -1253,11 +1255,11 @@ async function toggleNetScan() {
 function stopNetScan() { try { window.api.stopNetScan(); } catch {} }
 
 function onNetScanResult(d) {
-  const { ip, port, url, protocol, result, detected } = d;
+  const { ip, port, url, protocol, result, detected, addrType } = d;
   const key = 'net:' + protocol + ':' + ip + ':' + port;
   const det = detected ? ('  [' + [detected.format, detected.vcodec, detected.res].filter(Boolean).join(' ') + ']') : '';
-  log('ok', 'Found ' + protocol.toUpperCase() + ': ' + url + det);
-  upsertNetStream({ key, ip, port, url, protocol, source: 'net', result, detected, seq: netStreamSeq++, iface: netIface });
+  log('ok', 'Found ' + protocol.toUpperCase() + ' (' + (addrType || 'unicast') + '): ' + url + det);
+  upsertNetStream({ key, ip, port, url, protocol, addrType, source: 'net', result, detected, seq: netStreamSeq++, iface: netIface });
 }
 
 function onNetScanProgress(d) {
@@ -1299,12 +1301,14 @@ function stopMdns() {
 function onMdnsAnnounce(d) {
   const key = 'mdns:' + d.protocol + ':' + d.ip + ':' + d.port;
   if (netStreams.has(key)) return;
-  log('info', 'mDNS: ' + d.protocol.toUpperCase() + ' "' + d.name + '" → ' + (d.host || d.ip) + ':' + d.port);
+  const tag = [d.flavor, d.addrType].filter(Boolean).join(' · ');
+  log('info', 'mDNS: ' + (d.flavor || d.protocol.toUpperCase()) + ' "' + d.name + '" → ' + (d.host || d.ip) + ':' + d.port + (tag ? '   [' + tag + ']' : ''));
   // Discovered devices (NDI/Dante/AES67/Ravenna) are NOT ffprobe/VLC-playable
   // URL streams — record them as discovered endpoints, never auto-probe.
   const isDevice = d.kind === 'device';
   upsertNetStream({
     key, ip: d.ip, port: d.port, url: d.url, protocol: d.protocol,
+    flavor: d.flavor, addrType: d.addrType,
     source: 'mdns', kind: isDevice ? 'device' : 'stream',
     result: isDevice ? { device: true } : { probing: true },
     seq: netStreamSeq++, mdnsName: d.name, host: d.host || null,
@@ -1472,10 +1476,11 @@ function sourceId(s) { return (s.source || '?') + ':' + (s.key || (s.ip + ':' + 
 function sourceLabel(s) {
   const name = nameStore[nameKey(s)] || s.mdnsName || s.name || '';
   const method = SRC_METHOD[s.source] || s.source || '?';
-  const proto = s.protocol ? '/' + s.protocol.toUpperCase() : '';
+  const kind = s.flavor || (s.protocol ? s.protocol.toUpperCase() : '');
+  const cast = s.addrType ? ' ·' + (s.addrType === 'multicast' ? 'mcast' : 'unicast') : '';
   const dev = (s.kind === 'device') ? ' ·device' : '';
   const addr = s.url || (s.ip + ':' + s.port);
-  return '[' + method + proto + dev + ']  ' + (name ? name + ' — ' : '') + addr;
+  return '[' + method + (kind ? '/' + kind : '') + cast + dev + ']  ' + (name ? name + ' — ' : '') + addr;
 }
 
 function refreshAllSources() {
@@ -1522,8 +1527,10 @@ function renderSourceDetail(id, s) {
   let h = '<div style="display:flex;align-items:flex-start;gap:12px;justify-content:space-between">';
   h += '<div style="min-width:0">';
   h += '<div style="font-size:13px;font-weight:600;color:var(--text)">' + esc(name || addr) + '</div>';
-  h += '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-top:2px">' +
-       esc(method) + (s.protocol ? ' · ' + esc(s.protocol.toUpperCase()) : '') + (isDevice ? ' · device' : '') + '</div>';
+  const subBits = [method, s.flavor || (s.protocol ? s.protocol.toUpperCase() : ''),
+                   s.addrType, s.ptp, s.iface ? 'NIC ' + s.iface : '', isDevice ? 'device' : '']
+                  .filter(Boolean).map(esc).join(' · ');
+  h += '<div style="font-family:var(--mono);font-size:10px;color:var(--t3);margin-top:2px">' + subBits + '</div>';
   h += '</div>';
   h += '<div style="display:flex;gap:6px;flex-shrink:0">';
   if (!isDevice) h += '<button class="btn primary" style="height:26px" onclick="playSource(\'' + idEsc + '\')">▶ Play in VLC</button>';

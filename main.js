@@ -142,40 +142,85 @@ ipcMain.handle('start-sap', (event, { iface }) => {
   const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
   const send = (ch, d) => { if (!event.sender.isDestroyed()) event.sender.send(ch, d); };
   sock.on('error', err => { send('sap-error', { message: err.message }); sock.close(); sapSock = null; });
-  sock.on('message', (msg, rinfo) => { const p = parseSap(msg); if (p) send('sap-announce', { ...p, from: rinfo.address }); });
+  sock.on('message', (msg, rinfo) => { const p = parseSap(msg); if (p) send('sap-announce', { ...p, from: rinfo.address, iface: iface || null }); });
   sock.bind(9875, () => {
-    try { sock.addMembership('224.2.127.254', iface || undefined); sock.setMulticastLoopback(false); send('sap-ready', {}); }
-    catch (e) { send('sap-error', { message: 'Could not join SAP group: ' + e.message }); }
+    // AES67/Ravenna announce on the global-scope group 239.255.255.255; the
+    // IANA well-known sap.mcast.net is 224.2.127.254. Join BOTH or AES67 is missed.
+    const groups = ['239.255.255.255', '224.2.127.254'];
+    let joined = 0;
+    for (const g of groups) {
+      try { sock.addMembership(g, iface || undefined); joined++; }
+      catch (e) { send('sap-error', { message: 'Could not join SAP group ' + g + ': ' + e.message, soft: true }); }
+    }
+    try { sock.setMulticastLoopback(false); } catch {}
+    if (joined) send('sap-ready', { groups });
+    else send('sap-error', { message: 'Could not join any SAP group' });
   });
   sapSock = sock;
   return { ok: true };
 });
 ipcMain.handle('stop-sap', () => { if (sapSock) { try { sapSock.close(); } catch {} sapSock = null; } return { ok: true }; });
 
+function isMulticastIp(ip) {
+  const o = parseInt((ip || '').split('.')[0], 10);
+  return o >= 224 && o <= 239;
+}
+
 function parseSap(buf) {
   if (buf.length < 8) return null;
   const flags = buf[0];
-  if (((flags >> 5) & 0x07) !== 1) return null;
-  if (flags & 0x04) return null;
+  const version = (flags >> 5) & 0x07;
+  if (version > 1) return null;          // SAP v0/v1 only
+  if (flags & 0x04) return null;         // T bit: deletion announcement
+  if (flags & 0x02) return null;         // E bit: encrypted (can't parse)
+  if (flags & 0x01) return null;         // C bit: compressed (skip)
+  const addrType = (flags >> 4) & 0x01;  // A bit: 0=IPv4 origin, 1=IPv6
   const authLen = buf[1];
-  let offset = 8 + authLen * 4;
+  const originLen = addrType ? 16 : 4;
+  const offset = 4 + originLen + authLen * 4;
   if (offset >= buf.length) return null;
   let text = buf.slice(offset).toString('utf8');
-  const nul = text.indexOf('\0');
-  if (nul >= 0 && nul < 40) text = text.slice(nul + 1);
+  // An optional "application/sdp\0" payload type may precede the SDP; locate the
+  // mandatory v=0 line instead of guessing.
+  const vi = text.indexOf('v=0');
+  if (vi > 0) text = text.slice(vi);
   return parseSdp(text);
 }
 
+// Parse SDP and classify the AoIP flavor + addressing. Returns null without a
+// usable connection address + media port.
 function parseSdp(sdp) {
-  const r = { name: null, address: null, port: null, mediaType: null };
+  const r = { name: null, address: null, port: null, mediaType: null,
+              codec: null, ptp: null, flavor: null, addrType: null };
+  let origin = '';
+  const attrs = [];
   for (const raw of sdp.split(/\r?\n/)) {
     if (raw.length < 2 || raw[1] !== '=') continue;
     const k = raw[0], v = raw.slice(2).trim();
     if (k === 's') r.name = v || null;
-    if (k === 'c') { const p = v.split(' '); if (p[2]) r.address = p[2].split('/')[0]; }
-    if (k === 'm') { const p = v.split(' '); r.mediaType = p[0]; r.port = parseInt(p[1]) || null; }
+    else if (k === 'o') origin = v;
+    else if (k === 'c') { const p = v.split(' '); if (p[2]) r.address = p[2].split('/')[0]; }
+    else if (k === 'm') { if (!r.mediaType) { const p = v.split(' '); r.mediaType = p[0]; r.port = parseInt(p[1]) || null; } }
+    else if (k === 'a') {
+      attrs.push(v);
+      if (/^rtpmap:/i.test(v)) r.codec = r.codec || (v.replace(/^rtpmap:\s*\d+\s*/i, '').trim() || null);
+      if (/^ts-refclk:.*ptp/i.test(v)) { const m = v.match(/domain=(\d+)/i); r.ptp = m ? ('PTP domain ' + m[1]) : 'PTP'; }
+    }
   }
-  return (r.address && r.port) ? r : null;
+  if (!r.address || !r.port) return null;
+  r.addrType = isMulticastIp(r.address) ? 'multicast' : 'unicast';
+
+  // Flavor heuristics from origin/session name/attributes + media.
+  const hay = (origin + ' ' + (r.name || '') + ' ' + attrs.join(' ')).toLowerCase();
+  const pcmAudio = r.mediaType === 'audio' && /l(16|24)|am824/i.test(r.codec || '');
+  if (/ravenna/.test(hay)) r.flavor = 'Ravenna';
+  else if (/omneo/.test(hay)) r.flavor = 'OMNEO';
+  else if (/dante/.test(hay)) r.flavor = 'Dante';
+  else if (/(2110|smpte)/.test(hay) && r.mediaType === 'video') r.flavor = 'ST 2110';
+  else if (pcmAudio || (r.mediaType === 'audio' && r.ptp)) r.flavor = 'AES67';
+  else if (r.mediaType === 'video') r.flavor = 'RTP video';
+  else r.flavor = 'RTP/SAP';
+  return r;
 }
 
 // ── TCP port check ────────────────────────────────────────────────────────────
@@ -286,7 +331,11 @@ async function runNetScan(event, params) {
 
       completed++;
       for (const r of results) {
-        send('net-scan-result', { ...r, progress: { completed, total, found } });
+        send('net-scan-result', {
+          ...r,
+          addrType: isMulticastIp(r.ip) ? 'multicast' : 'unicast',
+          progress: { completed, total, found },
+        });
       }
       send('net-scan-progress', { completed, total, found });
     }
@@ -311,10 +360,18 @@ let mdnsSock = null;
 // kind:'device' means these are discovered endpoints, NOT directly probeable/playable
 // URL streams. NDI needs the NDI SDK / a monitor; Dante/AES67/Ravenna need an AoIP receiver.
 const MDNS_SERVICE_MAP = {
-  '_ndi._tcp.local':      { protocol: 'ndi',     kind: 'device', urlFn: (ip, port, inst) => `ndi://${inst || ip}` },
-  '_netaudio._tcp.local': { protocol: 'dante',   kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
-  '_aes67._udp.local':    { protocol: 'aes67',   kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
-  '_ravenna._tcp.local':  { protocol: 'ravenna', kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
+  '_ndi._tcp.local':           { protocol: 'ndi',     flavor: 'NDI',           kind: 'device', urlFn: (ip, port, inst) => `ndi://${inst || ip}` },
+  // Dante (Audinate) — and OMNEO (Bosch) which is built on Dante transport.
+  '_netaudio-arc._udp.local':  { protocol: 'dante',   flavor: 'Dante/OMNEO (ARC)', kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
+  '_netaudio-chan._udp.local': { protocol: 'dante',   flavor: 'Dante/OMNEO (chan)', kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
+  '_netaudio-cmc._udp.local':  { protocol: 'dante',   flavor: 'Dante/OMNEO (CMC)',  kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
+  '_netaudio-dbc._udp.local':  { protocol: 'dante',   flavor: 'Dante/OMNEO (DBC)',  kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
+  // Ravenna / AES67
+  '_ravenna._tcp.local':       { protocol: 'ravenna', flavor: 'Ravenna',       kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
+  '_aes67._udp.local':         { protocol: 'aes67',   flavor: 'AES67',         kind: 'device', urlFn: (ip, port) => `aes67://${ip}:${port}` },
+  // NMOS (SMPTE ST 2110 control/registry)
+  '_nmos-register._tcp.local': { protocol: 'nmos',    flavor: 'NMOS registry', kind: 'device', urlFn: (ip, port) => `http://${ip}:${port}` },
+  '_nmos-node._tcp.local':     { protocol: 'nmos',    flavor: 'NMOS node',     kind: 'device', urlFn: (ip, port) => `http://${ip}:${port}` },
 };
 
 function parseDnsName(buf, offset) {
@@ -477,7 +534,9 @@ ipcMain.handle('start-mdns', (event) => {
         const url = info.urlFn(ip, srv.port, instLabel);
         send('mdns-announce', {
           ip, port: srv.port, protocol: info.protocol,
+          flavor: info.flavor || info.protocol,
           kind: info.kind || 'device',
+          addrType: isMulticastIp(ip) ? 'multicast' : 'unicast',
           host: target || null,
           name: instLabel,
           url,
