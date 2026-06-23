@@ -6,6 +6,7 @@ const os    = require('os');
 const dgram = require('dgram');
 const net   = require('net');
 const { createTsAnalyzer } = require('./scripts/ts-analyzer');
+const { createRtpAnalyzer } = require('./scripts/rtp-analyzer');
 
 function findFfprobe() {
   if (process.platform === 'win32') {
@@ -55,7 +56,7 @@ function createWindow() {
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-app.on('before-quit', () => { stopIgmpHelper(); stopDhcpHelper(); stopPlayerFfmpeg(); });
+app.on('before-quit', () => { stopIgmpHelper(); stopDhcpHelper(); stopPlayerFfmpeg(); stopRtp(); });
 
 // ── ffprobe ───────────────────────────────────────────────────────────────────
 function probeUrl(url, timeoutMs) {
@@ -819,6 +820,40 @@ ipcMain.handle('player-start', async (event, { url } = {}) => {
   return { ok: true, port };
 });
 ipcMain.handle('player-stop', () => { stopPlayerFfmpeg(); return { ok: true }; });
+
+// ── RTP / AES67 stream health ────────────────────────────────────────────────
+// AES67/Ravenna RTP is multicast on an unprivileged port (typically 5004), so we
+// can join the group with a plain UDP socket (no root) and parse RTP directly.
+let rtpSock = null, rtpAnalyzer = null, rtpTimer = null;
+
+function stopRtp() {
+  if (rtpTimer) { clearInterval(rtpTimer); rtpTimer = null; }
+  if (rtpSock) { try { rtpSock.close(); } catch {} rtpSock = null; }
+  rtpAnalyzer = null;
+}
+
+ipcMain.handle('rtp-analyze-start', (event, { address, port, iface, clockRate } = {}) => {
+  if (!address || !port) return { error: 'no_target' };
+  if (!isMulticastIp(address)) {
+    return { error: 'not_multicast', message: 'Passive RTP analysis needs a multicast stream (AES67/Ravenna). Unicast RTP is only visible at the endpoint.' };
+  }
+  stopRtp();
+  const send = (ch, d) => { if (!event.sender.isDestroyed()) event.sender.send(ch, d); };
+  const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  rtpAnalyzer = createRtpAnalyzer(parseInt(clockRate, 10) || 48000);
+  sock.on('error', e => { send('rtp-error', { message: e.message }); stopRtp(); });
+  sock.on('message', msg => { if (rtpAnalyzer) rtpAnalyzer.feed(msg, Date.now()); });
+  try {
+    sock.bind(port, () => {
+      try { sock.addMembership(address, iface || undefined); send('rtp-ready', { address, port }); }
+      catch (e) { send('rtp-error', { message: 'Could not join ' + address + ': ' + e.message }); stopRtp(); }
+    });
+  } catch (e) { return { error: 'bind_failed', message: e.message }; }
+  rtpSock = sock;
+  rtpTimer = setInterval(() => { if (rtpAnalyzer) send('rtp-health', rtpAnalyzer.snapshot()); }, 1000);
+  return { ok: true };
+});
+ipcMain.handle('rtp-analyze-stop', () => { stopRtp(); return { ok: true }; });
 
 // ── Misc IPC ──────────────────────────────────────────────────────────────────
 // Accepts either a bare url string (legacy) or { url, miface } where miface is

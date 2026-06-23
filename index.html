@@ -723,6 +723,20 @@ select{color:var(--t2);cursor:pointer}
   </div>
 </div>
 
+<!-- RTP / AES67 stream health -->
+<div id="rtpModal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.82);align-items:center;justify-content:center">
+  <div style="width:90vw;max-width:760px;background:var(--bg2);border:1px solid var(--bd2);border-radius:10px;overflow:hidden;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid var(--bd)">
+      <span id="rtpTitle" style="font-weight:700;font-size:14px;flex:1">RTP / AES67 Health</span>
+      <button class="btn red" onclick="closeRtp()">✕ Close</button>
+    </div>
+    <div style="padding:14px 16px;font-family:var(--mono);font-size:11px;max-height:70vh;overflow-y:auto">
+      <div id="rtpStatus" style="color:var(--t3);margin-bottom:8px"></div>
+      <div id="rtpStreams"></div>
+    </div>
+  </div>
+</div>
+
 <script src="node_modules/mpegts.js/dist/mpegts.js"></script>
 <script>
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -813,8 +827,15 @@ function bindEvents() {
     log('err', 'Player: ' + (d.message || 'error'));
   });
   window.api.player.onTsHealth(renderTsHealth);
+  window.api.rtp.onHealth(renderRtpHealth);
+  window.api.rtp.onReady(d => { if (rtpActive) document.getElementById('rtpStatus').textContent = 'Joined ' + d.address + ':' + d.port + ' — listening…'; });
+  window.api.rtp.onError(d => { if (rtpActive) document.getElementById('rtpStatus').textContent = 'RTP error: ' + (d.message || 'unknown'); });
   // Keyboard nav: player open → ↑/↓ channel, Esc close; else ring → ←/→ flip, Enter play
   window.addEventListener('keydown', e => {
+    if (document.getElementById('rtpModal').style.display === 'flex') {
+      if (e.key === 'Escape') closeRtp();
+      return;
+    }
     if (document.getElementById('playerModal').style.display === 'flex') {
       if (e.key === 'ArrowUp') { playerChannel(-1); e.preventDefault(); }
       else if (e.key === 'ArrowDown') { playerChannel(1); e.preventDefault(); }
@@ -1598,6 +1619,8 @@ function renderSourceDetail(id, s) {
   if (!isDevice) h += '<button class="btn primary" style="height:26px" onclick="playSource(\'' + idEsc + '\')">▶ Play in VLC</button>';
   h += '<button class="btn" style="height:26px" onclick="copySource(\'' + idEsc + '\')">Copy URL</button>';
   if (!isDevice) h += '<button class="btn" style="height:26px" onclick="probeSource(\'' + idEsc + '\')">Probe</button>';
+  const isMcastRtp = s.addrType === 'multicast' || /aes67|ravenna|dante|rtp/i.test(s.flavor || '');
+  if (isMcastRtp && s.port) h += '<button class="btn" style="height:26px" onclick="openRtpFromId(\'' + idEsc + '\')" title="Passive RTP loss/jitter analysis">RTP Health</button>';
   h += '</div></div>';
 
   h += '<div style="font-family:var(--mono);font-size:11px;color:var(--t2);margin-top:8px;word-break:break-all">' + esc(addr) + '</div>';
@@ -2168,6 +2191,55 @@ function renderTsHealth(h) {
   s += tsCheckRow('PMT', h.checks.pmt);
   s += tsCheckRow('PCR repetition', h.checks.pcr);
   el.innerHTML = s;
+}
+
+// ── RTP / AES67 stream health ───────────────────────────────────────────────
+let rtpActive = false;
+
+function openRtpFromId(id) {
+  const s = allSourcesIndex[id];
+  if (s) openRtp(s);
+}
+
+function openRtp(s) {
+  const addr = s.ip || (s.address) || '';
+  if (s.addrType && s.addrType !== 'multicast') {
+    log('warn', 'RTP analysis needs a multicast stream (AES67/Ravenna); unicast RTP is only visible at the endpoint.');
+    return;
+  }
+  rtpActive = true;
+  document.getElementById('rtpTitle').textContent = 'RTP / AES67 Health — ' + addr + ':' + s.port;
+  document.getElementById('rtpStatus').textContent = 'Joining ' + addr + ':' + s.port + ' …';
+  document.getElementById('rtpStreams').innerHTML = '';
+  document.getElementById('rtpModal').style.display = 'flex';
+  window.api.rtp.start({ address: addr, port: s.port, iface: s.iface }).then(r => {
+    if (r && r.error) document.getElementById('rtpStatus').textContent = 'RTP: ' + (r.message || r.error);
+  });
+}
+
+function closeRtp() {
+  rtpActive = false;
+  try { window.api.rtp.stop(); } catch {}
+  document.getElementById('rtpModal').style.display = 'none';
+}
+
+function renderRtpHealth(d) {
+  if (!rtpActive || !d) return;
+  const el = document.getElementById('rtpStreams');
+  if (!d.streams.length) { document.getElementById('rtpStatus').textContent = 'Listening… no RTP packets received yet'; el.innerHTML = ''; return; }
+  document.getElementById('rtpStatus').textContent = 'clock ' + d.clockRate + ' Hz  ·  ' + d.streams.length + ' SSRC' + (d.streams.length === 1 ? '' : 's');
+  let h = '';
+  for (const st of d.streams) {
+    const lossColor = st.lossPct > 0.1 ? '#ff6b6b' : st.lossPct > 0 ? 'var(--amber)' : 'var(--green)';
+    const jitColor = st.jitterMs > 1 ? 'var(--amber)' : 'var(--green)';
+    h += '<div style="border:1px solid var(--bd);border-radius:6px;padding:9px 11px;margin-bottom:6px">';
+    h += '<div style="color:var(--cyan)">SSRC ' + esc(st.ssrc) + '  ·  PT ' + st.pt + '  ·  ' + st.pps + ' pkt/s</div>';
+    h += '<div style="color:' + lossColor + '">loss ' + st.lossPct + '%  (' + st.lost + '/' + st.expected + ')</div>';
+    h += '<div style="color:' + jitColor + '">jitter ' + st.jitterMs + ' ms</div>';
+    h += '<div style="color:var(--t2)">reordered ' + st.reordered + '  ·  dup ' + st.dup + '  ·  received ' + st.received + '</div>';
+    h += '</div>';
+  }
+  el.innerHTML = h;
 }
 
 async function playerPlayCurrent() {

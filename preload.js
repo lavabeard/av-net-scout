@@ -63,6 +63,15 @@ contextBridge.exposeInMainWorld('api', {
     onTsHealth: cb => ipcRenderer.on('player-ts-health', (_, d) => cb(d)),
   },
 
+  // RTP / AES67 multicast stream health
+  rtp: {
+    start:    (opts) => ipcRenderer.invoke('rtp-analyze-start', opts),
+    stop:     ()     => ipcRenderer.invoke('rtp-analyze-stop'),
+    onReady:  cb => ipcRenderer.on('rtp-ready',  (_, d) => cb(d)),
+    onHealth: cb => ipcRenderer.on('rtp-health', (_, d) => cb(d)),
+    onError:  cb => ipcRenderer.on('rtp-error',  (_, d) => cb(d)),
+  },
+
   // Network Tools — DHCP detector
   dhcp: {
     detect:   (iface) => ipcRenderer.invoke('dhcp-detect-start', { iface }),
