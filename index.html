@@ -597,9 +597,10 @@ select{color:var(--t2);cursor:pointer}
 
     <div class="guide" id="toolsGuide">
       <div class="guide-icon">🛠</div>
-      <div class="guide-head">IGMP snooping &amp; querier detector</div>
+      <div class="guide-head">IGMP snooping, querier &amp; PTP detector</div>
       <div class="guide-body">
-        Start the detector to passively capture IGMP on your network.<br>
+        Start the detector to passively capture IGMP <em>and PTP</em> on your network.<br>
+        PTP: maps the clock hierarchy — grandmaster, boundary clocks, domains (v2 + v1).<br>
         It reports whether a <em>querier</em> is present (the device that keeps multicast
         alive on snooping switches), its IP, version and query interval — and maps which
         devices are subscribed to which multicast groups.<br><br>
@@ -617,6 +618,15 @@ select{color:var(--t2);cursor:pointer}
       </thead>
       <tbody id="memberRows"></tbody>
     </table>
+
+    <!-- PTP clock map (captured alongside IGMP) -->
+    <div id="ptpWrap" style="display:none;margin-top:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.05em;text-transform:uppercase">PTP Clocks — grandmaster / boundary map</span>
+        <span id="ptpCount" style="font-family:var(--mono);font-size:9px;color:var(--t3)"></span>
+      </div>
+      <div id="ptpDomains" style="font-family:var(--mono);font-size:11px;line-height:1.7"></div>
+    </div>
 
     <!-- Live sniffed IGMP traffic -->
     <div id="igmpActivityWrap" style="display:none;margin-top:14px">
@@ -769,6 +779,7 @@ function bindEvents() {
   window.api.igmp.onReady(d => { setIgmpStatus('listening'); log('ok', 'IGMP capture started on ' + (d.device || '?') + (d.linkType ? ' [' + d.linkType + ']' : '')); });
   window.api.igmp.onQuerier(d => { onIgmpQuerier(d); igmpFeed('query', 'QUERY  from ' + (d.ip || '?') + (d.general ? '  (general)' : (d.group ? '  →  ' + d.group : '')) + (d.version ? '  v' + d.version : '')); });
   window.api.igmp.onMembership(onIgmpMembership);
+  window.api.igmp.onPtp(d => renderPtp(d.domains));
   window.api.igmp.onReport(d => igmpFeed('join',  'JOIN   ' + (d.reporter || '?') + '  →  ' + d.group + (d.version ? '  v' + d.version : '')));
   window.api.igmp.onLeave(d => igmpFeed('leave', 'LEAVE  ' + (d.reporter || '?') + '  →  ' + d.group));
   window.api.igmp.onError(onIgmpError);
@@ -895,6 +906,50 @@ function igmpFeed(kind, text) {
   document.getElementById('igmpActivityCount').textContent = igmpFeedCount + ' packets';
 }
 
+// PTP clock map (captured alongside IGMP)
+function clockClassLabel(c) {
+  if (c == null) return '';
+  if (c <= 6) return 'locked';
+  if (c === 7) return 'holdover';
+  if (c === 13 || c === 14) return 'holdover';
+  if (c === 52 || c === 187) return 'holdover (degraded)';
+  if (c === 248) return 'free-run';
+  if (c === 255) return 'slave-only';
+  return '';
+}
+
+function renderPtp(domains) {
+  const wrap = document.getElementById('ptpWrap');
+  const el = document.getElementById('ptpDomains');
+  if (!domains || !domains.length) return;
+  wrap.style.display = 'block';
+  let total = 0, h = '';
+  for (const dom of domains) {
+    total += dom.clocks.length;
+    h += '<div style="border:1px solid var(--bd);border-radius:6px;padding:10px 12px;margin-bottom:6px">';
+    h += '<div style="color:var(--cyan);font-weight:600">Domain ' + dom.domain + '  ·  PTPv' + dom.version + '</div>';
+    if (dom.grandmaster) {
+      const gm = dom.grandmaster;
+      h += '<div style="color:var(--green);margin-top:4px">★ Grandmaster ' + esc(gm.clock) + (gm.bestEffort ? '  (v1 best-effort)' : '') + '</div>';
+      const bits = [];
+      if (gm.priority1 != null) bits.push('prio1 ' + gm.priority1);
+      if (gm.priority2 != null) bits.push('prio2 ' + gm.priority2);
+      if (gm.clockClass != null) { const lbl = clockClassLabel(gm.clockClass); bits.push('class ' + gm.clockClass + (lbl ? ' (' + lbl + ')' : '')); }
+      if (gm.timeSource != null) bits.push('src 0x' + gm.timeSource.toString(16));
+      if (bits.length) h += '<div style="color:var(--t3);margin-left:14px">' + esc(bits.join('  ·  ')) + '</div>';
+    } else {
+      h += '<div style="color:var(--amber);margin-top:4px">No grandmaster identified yet</div>';
+    }
+    for (const c of dom.clocks) {
+      const col = c.role === 'grandmaster' ? 'var(--green)' : c.role === 'boundary/master' ? 'var(--amber)' : 'var(--t2)';
+      h += '<div style="margin-left:14px;color:' + col + '">· ' + esc(c.clock) + '  [' + esc(c.role) + (c.stepsRemoved != null ? ', steps ' + c.stepsRemoved : '') + ']</div>';
+    }
+    h += '</div>';
+  }
+  el.innerHTML = h;
+  document.getElementById('ptpCount').textContent = total + ' clock' + (total === 1 ? '' : 's');
+}
+
 function setIgmpStatus(state) {
   const pill = document.getElementById('igmpPill');
   const map = {
@@ -915,6 +970,8 @@ function toggleIgmp() {
   igmpFeedCount = 0;
   document.getElementById('igmpActivity').innerHTML = '';
   document.getElementById('igmpActivityCount').textContent = '';
+  document.getElementById('ptpWrap').style.display = 'none';
+  document.getElementById('ptpDomains').innerHTML = '';
   setIgmpStatus('starting');
   document.getElementById('igmpBtn').innerHTML = '■ Stop Detector';
   document.getElementById('toolsGuide').style.display = 'none';

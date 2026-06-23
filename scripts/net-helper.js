@@ -227,9 +227,9 @@ function startCapture(iface) {
   captureBuf = Buffer.alloc(65535);
   let linkType;
   try {
-    // BPF filter: "ip proto 2" (IGMP). The "igmp" keyword does not compile
-    // reliably through this libpcap binding, so we match the IP protocol number.
-    linkType = c.open(device, 'ip proto 2', 10 * 1024 * 1024, captureBuf);
+    // Capture IGMP (IP proto 2) AND PTP (UDP 319/320) in one handle. The "igmp"
+    // keyword doesn't compile reliably through this binding, so match proto 2.
+    linkType = c.open(device, '(ip proto 2) or (udp port 319 or udp port 320)', 10 * 1024 * 1024, captureBuf);
     if (typeof c.setMinBytes === 'function') c.setMinBytes(0);
   } catch (e) {
     const code = /permission|denied|not permitted|EACCES|EPERM|root/i.test(e.message) ? 'eaccess' : 'open_failed';
@@ -239,38 +239,136 @@ function startCapture(iface) {
 
   capInstance = c;
   started = true;
+  ptpClocks.clear();
   emit({ ev: 'ready', device, linkType });
 
   c.on('packet', () => {
     try {
-      let src, igmpStart, igmpEnd;
+      let ipOff;
       if (linkType === 'ETHERNET') {
         const eth = decoders.Ethernet(captureBuf);
         if (eth.info.type !== PROTOCOL.ETHERNET.IPV4) return;
-        const ip = decoders.IPV4(captureBuf, eth.offset);
-        if (ip.info.protocol !== PROTOCOL.IP.IGMP && ip.info.protocol !== 2) return;
-        src = ip.info.srcaddr;
-        igmpStart = ip.offset;
-        igmpEnd = ip.offset + (ip.info.totallen - ip.hdrlen);
-      } else if (linkType === 'RAW' || linkType === 'NULL') {
-        const off = linkType === 'NULL' ? 4 : 0; // BSD loopback has a 4-byte family header
-        const ip = decoders.IPV4(captureBuf, off);
-        if (ip.info.protocol !== PROTOCOL.IP.IGMP && ip.info.protocol !== 2) return;
-        src = ip.info.srcaddr;
-        igmpStart = ip.offset;
-        igmpEnd = ip.offset + (ip.info.totallen - ip.hdrlen);
-      } else {
-        return; // unsupported link layer
+        ipOff = eth.offset;
+      } else if (linkType === 'RAW') { ipOff = 0; }
+      else if (linkType === 'NULL') { ipOff = 4; } // BSD loopback family header
+      else { return; }
+
+      const ip = decoders.IPV4(captureBuf, ipOff);
+      const src = ip.info.srcaddr;
+      const end = ip.offset + (ip.info.totallen - ip.hdrlen);
+      if (end > captureBuf.length || end <= ip.offset) return;
+
+      if (ip.info.protocol === 2) {                      // IGMP
+        const igmp = Buffer.from(captureBuf.subarray(ip.offset, end));
+        for (const rec of decodeIgmp(src, igmp)) handleRecord(rec);
+      } else if (ip.info.protocol === 17) {              // UDP → PTP?
+        const udp = decoders.UDP(captureBuf, ip.offset);
+        if (udp.info.dstport !== 319 && udp.info.dstport !== 320) return;
+        const pEnd = Math.min(end, udp.offset + (udp.info.length - 8));
+        if (pEnd <= udp.offset) return;
+        const rec = parsePtp(src, Buffer.from(captureBuf.subarray(udp.offset, pEnd)));
+        if (rec) handlePtp(rec);
       }
-      if (igmpEnd > captureBuf.length || igmpEnd <= igmpStart) return;
-      const igmp = Buffer.from(captureBuf.subarray(igmpStart, igmpEnd));
-      for (const rec of decodeIgmp(src, igmp)) handleRecord(rec);
     } catch (e) {
       log('packet decode error: ' + e.message);
     }
   });
 
-  membershipTimer = setInterval(pruneAndSnapshot, 2000);
+  membershipTimer = setInterval(() => { pruneAndSnapshot(); ptpSnapshot(); }, 2000);
+}
+
+// ── PTP clock discovery (passive Announce sniff; v2 full, v1 best-effort) ─────
+const PTP_TTL_MS = 30 * 1000;
+const ptpClocks = new Map(); // "domain|clockId" -> { ...announce, lastSeenMs }
+
+function hexId(buf) {
+  return Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join(':');
+}
+
+function parsePtp(src, buf) {
+  if (buf.length < 34) return null;
+  // PTPv1 (IEEE 1588-2002): versionPTP is a UInt16 at bytes 0-1 == 0x0001.
+  if (buf[0] === 0x00 && buf[1] === 0x01) {
+    const control = buf[32];
+    const srcUuid = buf.length >= 28 ? hexId(buf.subarray(22, 28)) : null;
+    let gmUuid = null, stepsRemoved = null;
+    if (control === 0 && buf.length >= 124) {            // v1 Sync carries GM fields
+      gmUuid = hexId(buf.subarray(106, 112));            // grandmasterClockUuid (typical offset)
+      stepsRemoved = (buf[122] << 8) | buf[123];
+    }
+    return { kind: 'announce', version: 1, domain: 0, srcClock: srcUuid || src,
+             gmIdentity: gmUuid, stepsRemoved, gmPriority1: null, gmPriority2: null,
+             gmClass: null, gmAccuracy: null, bestEffort: true };
+  }
+  // PTPv2 (IEEE 1588-2008): low nibble of byte 1 == 2.
+  if ((buf[1] & 0x0f) !== 2) return null;
+  const msgType = buf[0] & 0x0f;
+  const domain = buf[4];
+  const srcClock = hexId(buf.subarray(20, 28));
+  if (msgType !== 0x0B) return { kind: 'seen', version: 2, domain, srcClock };   // non-Announce talker
+  if (buf.length < 64) return null;
+  return {
+    kind: 'announce', version: 2, domain, srcClock,
+    gmPriority1: buf[47], gmClass: buf[48], gmAccuracy: buf[49],
+    gmVariance: (buf[50] << 8) | buf[51], gmPriority2: buf[52],
+    gmIdentity: hexId(buf.subarray(53, 61)),
+    stepsRemoved: (buf[61] << 8) | buf[62],
+    timeSource: buf[63],
+  };
+}
+
+function handlePtp(rec) {
+  if (!rec) return;
+  const key = rec.domain + '|' + rec.srcClock;
+  const prev = ptpClocks.get(key) || {};
+  ptpClocks.set(key, { ...prev, ...rec, lastSeenMs: now() });
+}
+
+function ptpSnapshot() {
+  const t = now();
+  for (const [k, c] of ptpClocks) if (t - c.lastSeenMs > PTP_TTL_MS) ptpClocks.delete(k);
+  if (!ptpClocks.size) return;
+
+  const byDomain = new Map();
+  for (const c of ptpClocks.values()) {
+    if (!byDomain.has(c.domain)) byDomain.set(c.domain, []);
+    byDomain.get(c.domain).push(c);
+  }
+
+  const domains = [];
+  for (const [domain, clocks] of byDomain) {
+    const announcers = clocks.filter(c => c.kind === 'announce' && c.gmIdentity);
+    // The grandmaster is the announcer whose own clock id == grandmasterIdentity
+    // at stepsRemoved 0; otherwise the GM id that downstream announcers reference.
+    let gmId = null;
+    const selfGm = announcers.find(c => c.srcClock === c.gmIdentity);
+    if (selfGm) gmId = selfGm.gmIdentity;
+    else if (announcers.length) gmId = announcers.slice().sort((a, b) => (a.stepsRemoved || 0) - (b.stepsRemoved || 0))[0].gmIdentity;
+    const gmRec = announcers.find(c => c.srcClock === gmId) || announcers.find(c => c.gmIdentity === gmId);
+
+    domains.push({
+      domain,
+      version: clocks[0].version,
+      grandmaster: gmId ? {
+        clock: gmId,
+        priority1: gmRec ? gmRec.gmPriority1 : null,
+        priority2: gmRec ? gmRec.gmPriority2 : null,
+        clockClass: gmRec ? gmRec.gmClass : null,
+        accuracy: gmRec ? gmRec.gmAccuracy : null,
+        timeSource: gmRec ? gmRec.timeSource : null,
+        bestEffort: gmRec ? !!gmRec.bestEffort : false,
+      } : null,
+      clocks: clocks.map(c => ({
+        clock: c.srcClock,
+        version: c.version,
+        stepsRemoved: c.stepsRemoved != null ? c.stepsRemoved : null,
+        role: (c.kind === 'announce' && c.srcClock === gmId && (c.stepsRemoved || 0) === 0) ? 'grandmaster'
+            : (c.kind === 'announce') ? 'boundary/master'
+            : 'clock',
+      })).sort((a, b) => (a.stepsRemoved || 0) - (b.stepsRemoved || 0)),
+    });
+  }
+  emit({ ev: 'ptp', domains });
 }
 
 // ── IGMP querier (raw-socket) ────────────────────────────────────────────────
@@ -760,6 +858,30 @@ function selftest() {
   check('offer lease', parsed.leaseSecs === 86400);
   check('non-reply rejected', parseDhcpReply(Buffer.from([1, 1, 6, 0])) === null);
 
+  // ── PTP v2 Announce parse ──
+  const ann = Buffer.alloc(64);
+  ann[0] = 0x0B;                 // messageType = Announce
+  ann[1] = 0x02;                 // versionPTP = 2
+  ann[4] = 3;                    // domainNumber
+  [0xaa,0xbb,0xcc,0xdd,0xee,0xff,0x00,0x11].forEach((b,k)=>ann[20+k]=b);  // sourcePortIdentity clock
+  ann[47] = 128;                 // grandmasterPriority1
+  ann[48] = 6;                   // clockClass (6 = locked to primary ref)
+  ann[49] = 0x21;               // clockAccuracy
+  ann[52] = 128;                 // grandmasterPriority2
+  [0xaa,0xbb,0xcc,0xdd,0xee,0xff,0x00,0x11].forEach((b,k)=>ann[53+k]=b);  // grandmasterIdentity (== source → this IS the GM)
+  ann[61] = 0x00; ann[62] = 0x00; // stepsRemoved = 0
+  ann[63] = 0x20;               // timeSource (GPS)
+  const p2 = parsePtp('10.0.0.9', ann);
+  check('ptp v2 announce', !!p2 && p2.kind === 'announce' && p2.version === 2);
+  check('ptp domain', p2.domain === 3);
+  check('ptp gm identity', p2.gmIdentity === 'aa:bb:cc:dd:ee:ff:00:11');
+  check('ptp self==gm (grandmaster)', p2.srcClock === p2.gmIdentity && p2.stepsRemoved === 0);
+  check('ptp priority1', p2.gmPriority1 === 128 && p2.gmClass === 6);
+  // Non-Announce PTP message still identifies a talker
+  const sync = Buffer.alloc(34); sync[0] = 0x00; sync[1] = 0x02; sync[4] = 3;
+  check('ptp non-announce seen', parsePtp('10.0.0.9', sync).kind === 'seen');
+  check('ptp too short', parsePtp('1.2.3.4', Buffer.from([0])) === null);
+
   console.log(`\nself-test: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
@@ -790,4 +912,5 @@ module.exports = { // for external tests
   decodeIgmp, checksum16, buildIgmpV2Query, buildIpHeaderWithRA,
   buildQueryPacket, shouldBeActiveQuerier,
   buildDhcpDiscover, parseDhcpReply,
+  parsePtp,
 };

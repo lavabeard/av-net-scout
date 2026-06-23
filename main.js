@@ -727,6 +727,7 @@ function relayHelperEvent(send, ev) {
     case 'ready':            send('igmp-ready', ev); break;
     case 'querier':          send('igmp-querier', ev); break;
     case 'membership':       send('igmp-membership', ev); break;
+    case 'ptp':              send('igmp-ptp', ev); break;
     case 'report':           send('igmp-report', ev); break;
     case 'leave':            send('igmp-leave', ev); break;
     case 'querier-ready':    send('igmp-querier-ready', ev); break;
