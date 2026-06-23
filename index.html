@@ -714,6 +714,10 @@ select{color:var(--t2);cursor:pointer}
         <div style="color:var(--t2);font-size:10px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">Stream info</div>
         <div id="plInfo" style="color:var(--t2);line-height:1.9"></div>
         <div id="plStatus" style="color:var(--t3);margin-top:10px;line-height:1.6"></div>
+        <div id="plHealthWrap" style="display:none;margin-top:14px">
+          <div style="color:var(--t2);font-size:10px;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">TS Health — TR 101 290</div>
+          <div id="plHealth" style="color:var(--t2);line-height:1.9"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -808,6 +812,7 @@ function bindEvents() {
     if (st) st.textContent = 'Player error: ' + (d.message || 'unknown');
     log('err', 'Player: ' + (d.message || 'error'));
   });
+  window.api.player.onTsHealth(renderTsHealth);
   // Keyboard nav: player open → ↑/↓ channel, Esc close; else ring → ←/→ flip, Enter play
   window.addEventListener('keydown', e => {
     if (document.getElementById('playerModal').style.display === 'flex') {
@@ -2138,6 +2143,33 @@ function destroyMpegts() {
   if (mpegtsPlayer) { try { mpegtsPlayer.destroy(); } catch {} mpegtsPlayer = null; }
 }
 
+function tsCheckRow(label, c) {
+  if (!c) return '';
+  if (c.na) return '<div style="color:var(--t3)">○ ' + label + ': n/a</div>';
+  const color = c.ok === null ? 'var(--t3)' : c.ok ? 'var(--green)' : '#ff6b6b';
+  const mark = c.ok === null ? '○' : c.ok ? '✓' : '✗';
+  let detail = '';
+  if (c.errors) detail += ' (' + c.errors + (label.indexOf('PCR') >= 0 ? ' >40ms' : ' err') + ')';
+  if (c.maxIntervalMs != null && label.indexOf('PCR') >= 0) detail += ' · max ' + c.maxIntervalMs + 'ms';
+  return '<div style="color:' + color + '">' + mark + ' ' + label + detail + '</div>';
+}
+
+function renderTsHealth(h) {
+  if (!h) return;
+  document.getElementById('plHealthWrap').style.display = 'block';
+  const el = document.getElementById('plHealth');
+  let s = '';
+  if (h.service) s += '<div style="color:var(--text)">' + esc(h.service) + (h.provider ? ' — ' + esc(h.provider) : '') + '</div>';
+  s += '<div style="color:var(--t3)">TS bitrate ' + (h.bitrateMbps || 0).toFixed(2) + ' Mbps' + (h.pcrPid != null ? '  ·  PCR ' + fmtPid(h.pcrPid) : '') + '</div>';
+  s += tsCheckRow('Sync loss', h.checks.sync);
+  s += tsCheckRow('Transport error (TEI)', h.checks.tei);
+  s += tsCheckRow('Continuity (CC)', h.checks.cc);
+  s += tsCheckRow('PAT', h.checks.pat);
+  s += tsCheckRow('PMT', h.checks.pmt);
+  s += tsCheckRow('PCR repetition', h.checks.pcr);
+  el.innerHTML = s;
+}
+
 async function playerPlayCurrent() {
   const s = playerList[playerIdx];
   if (!s) return;
@@ -2146,6 +2178,8 @@ async function playerPlayCurrent() {
   document.getElementById('plChName').textContent = (name ? name + '  ·  ' : '') + (s.ip ? s.ip + ':' + s.port : s.url);
   renderPlayerInfo(s);
   document.getElementById('plStatus').textContent = 'Starting ffmpeg remux…';
+  document.getElementById('plHealthWrap').style.display = 'none';
+  document.getElementById('plHealth').innerHTML = '';
   destroyMpegts();
   let r;
   try { r = await window.api.player.start(s.url); } catch (e) { r = { error: e.message }; }

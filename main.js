@@ -5,6 +5,7 @@ const fs    = require('fs');
 const os    = require('os');
 const dgram = require('dgram');
 const net   = require('net');
+const { createTsAnalyzer } = require('./scripts/ts-analyzer');
 
 function findFfprobe() {
   if (process.platform === 'win32') {
@@ -748,6 +749,7 @@ function relayHelperEvent(send, ev) {
 // MPEG-TS with ffmpeg (-c copy, no re-encode → original quality) and pipe it over
 // a 127.0.0.1 WebSocket that mpegts.js plays in the renderer.
 let playerWss = null, playerWsPort = 0, playerFfmpeg = null;
+let playerTsAnalyzer = null, playerTsTimer = null;
 const playerClients = new Set();
 
 function ensurePlayerWss() {
@@ -768,6 +770,8 @@ function ensurePlayerWss() {
 }
 
 function stopPlayerFfmpeg() {
+  if (playerTsTimer) { clearInterval(playerTsTimer); playerTsTimer = null; }
+  playerTsAnalyzer = null;
   if (!playerFfmpeg) return;
   const p = playerFfmpeg; playerFfmpeg = null;
   try { p.kill('SIGKILL'); } catch {}
@@ -784,7 +788,16 @@ function startPlayerFfmpeg(url, send) {
   try { proc = spawn(ff, args, { stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch (e) { send('player-error', { message: 'ffmpeg spawn failed: ' + e.message }); return; }
   playerFfmpeg = proc;
+
+  // Tee the same MPEG-TS into the TR 101 290 analyzer (one ffmpeg feeds both the
+  // player and the health monitor); emit a health snapshot once a second.
+  playerTsAnalyzer = createTsAnalyzer();
+  playerTsTimer = setInterval(() => {
+    if (playerTsAnalyzer) send('player-ts-health', playerTsAnalyzer.snapshot());
+  }, 1000);
+
   proc.stdout.on('data', chunk => {
+    if (playerTsAnalyzer) { try { playerTsAnalyzer.feed(chunk); } catch {} }
     for (const ws of playerClients) if (ws.readyState === 1) { try { ws.send(chunk); } catch {} }
   });
   let errTail = '';

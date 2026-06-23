@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('api', {
     stop:    ()    => ipcRenderer.invoke('player-stop'),
     onError: cb => ipcRenderer.on('player-error',   (_, d) => cb(d)),
     onStopped: cb => ipcRenderer.on('player-stopped', (_, d) => cb(d)),
+    onTsHealth: cb => ipcRenderer.on('player-ts-health', (_, d) => cb(d)),
   },
 
   // Network Tools — DHCP detector
