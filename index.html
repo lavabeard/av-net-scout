@@ -631,7 +631,14 @@ select{color:var(--t2);cursor:pointer}
         <span style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.05em;text-transform:uppercase">PTP Clocks — grandmaster / boundary map</span>
         <span id="ptpCount" style="font-family:var(--mono);font-size:9px;color:var(--t3)"></span>
       </div>
+      <div id="ptpAlarms" style="margin-bottom:6px"></div>
       <div id="ptpDomains" style="font-family:var(--mono);font-size:11px;line-height:1.7"></div>
+    </div>
+
+    <!-- LLDP local-link neighbor (which switch/port we're plugged into) -->
+    <div id="lldpWrap" style="display:none;margin-top:14px">
+      <div style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px">LLDP — local link neighbor</div>
+      <div id="lldpBody" style="font-family:var(--mono);font-size:11px;line-height:1.8"></div>
     </div>
 
     <!-- Live sniffed IGMP traffic -->
@@ -803,7 +810,8 @@ function bindEvents() {
   window.api.igmp.onReady(d => { setIgmpStatus('listening'); log('ok', 'IGMP capture started on ' + (d.device || '?') + (d.linkType ? ' [' + d.linkType + ']' : '')); });
   window.api.igmp.onQuerier(d => { onIgmpQuerier(d); igmpFeed('query', 'QUERY  from ' + (d.ip || '?') + (d.general ? '  (general)' : (d.group ? '  →  ' + d.group : '')) + (d.version ? '  v' + d.version : '')); });
   window.api.igmp.onMembership(onIgmpMembership);
-  window.api.igmp.onPtp(d => renderPtp(d.domains));
+  window.api.igmp.onPtp(d => renderPtp(d.domains, d.alarms));
+  window.api.igmp.onLldp(d => renderLldp(d.neighbors));
   window.api.igmp.onReport(d => igmpFeed('join',  'JOIN   ' + (d.reporter || '?') + '  →  ' + d.group + (d.version ? '  v' + d.version : '')));
   window.api.igmp.onLeave(d => igmpFeed('leave', 'LEAVE  ' + (d.reporter || '?') + '  →  ' + d.group));
   window.api.igmp.onError(onIgmpError);
@@ -950,9 +958,21 @@ function clockClassLabel(c) {
   return '';
 }
 
-function renderPtp(domains) {
+function renderPtp(domains, alarms) {
   const wrap = document.getElementById('ptpWrap');
   const el = document.getElementById('ptpDomains');
+  const alarmEl = document.getElementById('ptpAlarms');
+  if (alarmEl) {
+    if (alarms && alarms.length) {
+      alarmEl.innerHTML = alarms.map(a => {
+        const c = a.severity === 'error' ? '#ff6b6b' : 'var(--amber)';
+        return '<div style="font-family:var(--mono);font-size:11px;color:' + c + '">⚠ ' + esc(a.message) + '</div>';
+      }).join('');
+      alarms.forEach(a => log(a.severity === 'error' ? 'err' : 'warn', 'PTP: ' + a.message));
+    } else {
+      alarmEl.innerHTML = '';
+    }
+  }
   if (!domains || !domains.length) return;
   wrap.style.display = 'block';
   let total = 0, h = '';
@@ -968,6 +988,7 @@ function renderPtp(domains) {
       if (gm.priority2 != null) bits.push('prio2 ' + gm.priority2);
       if (gm.clockClass != null) { const lbl = clockClassLabel(gm.clockClass); bits.push('class ' + gm.clockClass + (lbl ? ' (' + lbl + ')' : '')); }
       if (gm.timeSource != null) bits.push('src 0x' + gm.timeSource.toString(16));
+      if (gm.announceIntervalS != null) bits.push('announce ' + gm.announceIntervalS + 's');
       if (bits.length) h += '<div style="color:var(--t3);margin-left:14px">' + esc(bits.join('  ·  ')) + '</div>';
     } else {
       h += '<div style="color:var(--amber);margin-top:4px">No grandmaster identified yet</div>';
@@ -980,6 +1001,25 @@ function renderPtp(domains) {
   }
   el.innerHTML = h;
   document.getElementById('ptpCount').textContent = total + ' clock' + (total === 1 ? '' : 's');
+}
+
+function renderLldp(neighbors) {
+  if (!neighbors || !neighbors.length) return;
+  document.getElementById('lldpWrap').style.display = 'block';
+  let h = '';
+  for (const n of neighbors) {
+    h += '<div style="border:1px solid var(--bd);border-radius:6px;padding:9px 11px;margin-bottom:6px">';
+    h += '<div style="color:var(--cyan)">' + esc(n.sysName || n.chassisId || n.mac || 'neighbor') + '</div>';
+    const bits = [];
+    if (n.portId) bits.push('port ' + n.portId);
+    if (n.portDesc && n.portDesc !== n.portId) bits.push(n.portDesc);
+    if (n.chassisId) bits.push('chassis ' + n.chassisId);
+    if (n.mac) bits.push('mac ' + n.mac);
+    if (bits.length) h += '<div style="color:var(--t2)">' + esc(bits.join('  ·  ')) + '</div>';
+    if (n.sysDesc) h += '<div style="color:var(--t3)">' + esc(n.sysDesc) + '</div>';
+    h += '</div>';
+  }
+  document.getElementById('lldpBody').innerHTML = h;
 }
 
 function setIgmpStatus(state) {
@@ -1004,6 +1044,9 @@ function toggleIgmp() {
   document.getElementById('igmpActivityCount').textContent = '';
   document.getElementById('ptpWrap').style.display = 'none';
   document.getElementById('ptpDomains').innerHTML = '';
+  document.getElementById('ptpAlarms').innerHTML = '';
+  document.getElementById('lldpWrap').style.display = 'none';
+  document.getElementById('lldpBody').innerHTML = '';
   setIgmpStatus('starting');
   document.getElementById('igmpBtn').innerHTML = '■ Stop Detector';
   document.getElementById('toolsGuide').style.display = 'none';

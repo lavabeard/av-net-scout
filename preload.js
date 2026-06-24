@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('api', {
     onQuerier:    cb => ipcRenderer.on('igmp-querier',    (_, d) => cb(d)),
     onMembership: cb => ipcRenderer.on('igmp-membership', (_, d) => cb(d)),
     onPtp:        cb => ipcRenderer.on('igmp-ptp',        (_, d) => cb(d)),
+    onLldp:       cb => ipcRenderer.on('igmp-lldp',       (_, d) => cb(d)),
     onReport:     cb => ipcRenderer.on('igmp-report',     (_, d) => cb(d)),
     onLeave:      cb => ipcRenderer.on('igmp-leave',      (_, d) => cb(d)),
     onError:      cb => ipcRenderer.on('igmp-error',      (_, d) => cb(d)),

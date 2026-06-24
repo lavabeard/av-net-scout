@@ -229,7 +229,7 @@ function startCapture(iface) {
   try {
     // Capture IGMP (IP proto 2) AND PTP (UDP 319/320) in one handle. The "igmp"
     // keyword doesn't compile reliably through this binding, so match proto 2.
-    linkType = c.open(device, '(ip proto 2) or (udp port 319 or udp port 320)', 10 * 1024 * 1024, captureBuf);
+    linkType = c.open(device, '(ip proto 2) or (udp port 319 or udp port 320) or (ether proto 0x88cc)', 10 * 1024 * 1024, captureBuf);
     if (typeof c.setMinBytes === 'function') c.setMinBytes(0);
   } catch (e) {
     const code = /permission|denied|not permitted|EACCES|EPERM|root/i.test(e.message) ? 'eaccess' : 'open_failed';
@@ -240,6 +240,8 @@ function startCapture(iface) {
   capInstance = c;
   started = true;
   ptpClocks.clear();
+  ptpGmHistory.clear();
+  lldpNeighbors.clear();
   emit({ ev: 'ready', device, linkType });
 
   c.on('packet', () => {
@@ -247,6 +249,7 @@ function startCapture(iface) {
       let ipOff;
       if (linkType === 'ETHERNET') {
         const eth = decoders.Ethernet(captureBuf);
+        if (eth.info.type === 0x88cc) { handleLldp(eth.info.srcmac, captureBuf, eth.offset); return; }
         if (eth.info.type !== PROTOCOL.ETHERNET.IPV4) return;
         ipOff = eth.offset;
       } else if (linkType === 'RAW') { ipOff = 0; }
@@ -274,12 +277,14 @@ function startCapture(iface) {
     }
   });
 
-  membershipTimer = setInterval(() => { pruneAndSnapshot(); ptpSnapshot(); }, 2000);
+  membershipTimer = setInterval(() => { pruneAndSnapshot(); ptpSnapshot(); lldpSnapshot(); }, 2000);
 }
 
 // ── PTP clock discovery (passive Announce sniff; v2 full, v1 best-effort) ─────
 const PTP_TTL_MS = 30 * 1000;
-const ptpClocks = new Map(); // "domain|clockId" -> { ...announce, lastSeenMs }
+const ptpClocks = new Map();   // "domain|clockId" -> { ...announce, lastSeenMs }
+const ptpGmHistory = new Map(); // domain -> last grandmaster id (for failover alarm)
+const lldpNeighbors = new Map(); // srcMac -> { ...tlvs, lastSeenMs }
 
 function hexId(buf) {
   return Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join(':');
@@ -314,6 +319,7 @@ function parsePtp(src, buf) {
     gmIdentity: hexId(buf.subarray(53, 61)),
     stepsRemoved: (buf[61] << 8) | buf[62],
     timeSource: buf[63],
+    logInterval: (buf[33] << 24) >> 24,   // logMessageInterval, sign-extended
   };
 }
 
@@ -336,6 +342,7 @@ function ptpSnapshot() {
   }
 
   const domains = [];
+  const alarms = [];
   for (const [domain, clocks] of byDomain) {
     const announcers = clocks.filter(c => c.kind === 'announce' && c.gmIdentity);
     // The grandmaster is the announcer whose own clock id == grandmasterIdentity
@@ -345,6 +352,22 @@ function ptpSnapshot() {
     if (selfGm) gmId = selfGm.gmIdentity;
     else if (announcers.length) gmId = announcers.slice().sort((a, b) => (a.stepsRemoved || 0) - (b.stepsRemoved || 0))[0].gmIdentity;
     const gmRec = announcers.find(c => c.srcClock === gmId) || announcers.find(c => c.gmIdentity === gmId);
+
+    // Alarm: more than one clock claiming grandmaster (steps 0, self==GM) in a domain.
+    const selfGms = [...new Set(announcers.filter(c => c.srcClock === c.gmIdentity && (c.stepsRemoved || 0) === 0).map(c => c.srcClock))];
+    if (selfGms.length > 1) {
+      alarms.push({ domain, severity: 'error', type: 'dual-gm',
+        message: 'Multiple grandmasters in domain ' + domain + ': ' + selfGms.join(', ') });
+    }
+    // Alarm: grandmaster changed since last snapshot (failover).
+    if (gmId) {
+      const prev = ptpGmHistory.get(domain);
+      if (prev && prev !== gmId) {
+        alarms.push({ domain, severity: 'warn', type: 'gm-change',
+          message: 'Grandmaster changed in domain ' + domain + ': ' + prev + ' → ' + gmId });
+      }
+      ptpGmHistory.set(domain, gmId);
+    }
 
     domains.push({
       domain,
@@ -356,6 +379,7 @@ function ptpSnapshot() {
         clockClass: gmRec ? gmRec.gmClass : null,
         accuracy: gmRec ? gmRec.gmAccuracy : null,
         timeSource: gmRec ? gmRec.timeSource : null,
+        announceIntervalS: gmRec && gmRec.logInterval != null ? +Math.pow(2, gmRec.logInterval).toFixed(3) : null,
         bestEffort: gmRec ? !!gmRec.bestEffort : false,
       } : null,
       clocks: clocks.map(c => ({
@@ -368,7 +392,59 @@ function ptpSnapshot() {
       })).sort((a, b) => (a.stepsRemoved || 0) - (b.stepsRemoved || 0)),
     });
   }
-  emit({ ev: 'ptp', domains });
+  emit({ ev: 'ptp', domains, alarms });
+}
+
+// ── LLDP neighbor discovery (Layer 2, EtherType 0x88cc) ──────────────────────
+// Shows the directly-connected switch + port ("where am I plugged in"). LLDP is
+// link-local (not forwarded), so this reflects our own uplink neighbor.
+function lldpId(val) {
+  if (!val || !val.length) return null;
+  const subtype = val[0];
+  const rest = val.subarray(1);
+  if (subtype === 4 && rest.length === 6) return hexId(rest);   // MAC address
+  const s = ascii(rest);
+  return s || hexId(rest);
+}
+function ascii(b) {
+  let out = '';
+  for (let i = 0; i < b.length; i++) { const c = b[i]; if (c >= 0x20 && c < 0x7f) out += String.fromCharCode(c); }
+  return out.trim() || null;
+}
+
+function parseLldp(buf, off) {
+  const tlv = {};
+  let i = off;
+  while (i + 2 <= buf.length) {
+    const type = (buf[i] >> 1) & 0x7f;
+    const len = ((buf[i] & 0x01) << 8) | buf[i + 1];
+    i += 2;
+    if (type === 0) break;                       // end of LLDPDU
+    if (i + len > buf.length) break;
+    const val = buf.subarray(i, i + len);
+    if (type === 1) tlv.chassisId = lldpId(val);
+    else if (type === 2) tlv.portId = lldpId(val);
+    else if (type === 4) tlv.portDesc = ascii(val);
+    else if (type === 5) tlv.sysName = ascii(val);
+    else if (type === 6) tlv.sysDesc = (ascii(val) || '').slice(0, 140) || null;
+    i += len;
+  }
+  return tlv;
+}
+
+function handleLldp(srcMac, buf, off) {
+  const tlv = parseLldp(buf, off);
+  lldpNeighbors.set(srcMac || (tlv.chassisId || 'unknown'), { mac: srcMac, ...tlv, lastSeenMs: now() });
+}
+
+function lldpSnapshot() {
+  const t = now();
+  for (const [k, n] of lldpNeighbors) if (t - n.lastSeenMs > 120000) lldpNeighbors.delete(k);
+  if (!lldpNeighbors.size) return;
+  emit({ ev: 'lldp', neighbors: [...lldpNeighbors.values()].map(n => ({
+    mac: n.mac, chassisId: n.chassisId, portId: n.portId,
+    portDesc: n.portDesc, sysName: n.sysName, sysDesc: n.sysDesc,
+  })) });
 }
 
 // ── IGMP querier (raw-socket) ────────────────────────────────────────────────
@@ -882,6 +958,25 @@ function selftest() {
   check('ptp non-announce seen', parsePtp('10.0.0.9', sync).kind === 'seen');
   check('ptp too short', parsePtp('1.2.3.4', Buffer.from([0])) === null);
 
+  // ── LLDP neighbor parse ──
+  const tlv = (type, valBytes) => {
+    const len = valBytes.length;
+    return [((type << 1) | (len >> 8)) & 0xff, len & 0xff, ...valBytes];
+  };
+  const mac = [0xaa, 0xbb, 0xcc, 0x11, 0x22, 0x33];
+  const name = [...'SW-CORE'].map(c => c.charCodeAt(0));
+  const portName = [...'Gi1/0/12'].map(c => c.charCodeAt(0));
+  const lldpBuf = Buffer.from([
+    ...tlv(1, [0x04, ...mac]),          // Chassis ID (subtype 4 = MAC)
+    ...tlv(2, [0x05, ...portName]),     // Port ID (subtype 5 = interface name)
+    ...tlv(5, name),                    // System Name
+    ...tlv(0, []),                      // End
+  ]);
+  const ll = parseLldp(lldpBuf, 0);
+  check('lldp chassis (MAC)', ll.chassisId === 'aa:bb:cc:11:22:33');
+  check('lldp port id', ll.portId === 'Gi1/0/12');
+  check('lldp system name', ll.sysName === 'SW-CORE');
+
   console.log(`\nself-test: ${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);
 }
@@ -912,5 +1007,5 @@ module.exports = { // for external tests
   decodeIgmp, checksum16, buildIgmpV2Query, buildIpHeaderWithRA,
   buildQueryPacket, shouldBeActiveQuerier,
   buildDhcpDiscover, parseDhcpReply,
-  parsePtp,
+  parsePtp, parseLldp,
 };
