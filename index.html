@@ -276,24 +276,30 @@ select{color:var(--t2);cursor:pointer}
 
   <!-- Range Config -->
   <div class="disc-body" id="rangeConfig">
-    <div class="field"><label>IP Prefix</label>
-      <div class="ip-box">
-        <input type="text" id="oct1" value="239" maxlength="3" size="3">
-        <span class="ip-sep">.</span>
-        <input type="text" id="oct2" value="252" maxlength="3" size="3">
-        <span class="ip-sep">.</span>
-        <input type="text" id="oct3" value="10"  maxlength="3" size="3">
-        <span class="ip-sep">.</span>
-        <span class="ip-x">x</span>
+    <!-- Primary inputs — highlighted: this is what defines the scan -->
+    <div style="display:flex;align-items:flex-end;gap:12px;padding:7px 12px;border:1px solid rgba(78,205,196,.45);background:rgba(78,205,196,.07);border-radius:6px">
+      <div class="field"><label style="color:var(--cyan)">IP Prefix</label>
+        <div class="ip-box">
+          <input type="text" id="oct1" value="239" maxlength="3" size="3">
+          <span class="ip-sep">.</span>
+          <input type="text" id="oct2" value="252" maxlength="3" size="3">
+          <span class="ip-sep">.</span>
+          <input type="text" id="oct3" value="10"  maxlength="3" size="3">
+          <span class="ip-sep">.</span>
+          <span class="ip-x">x</span>
+        </div>
       </div>
+      <div class="field"><label style="color:var(--cyan)">Start</label><input type="number" id="rStart" value="1"  min="0" max="254" style="width:58px"></div>
+      <div class="field"><label style="color:var(--cyan)">End</label>  <input type="number" id="rEnd"   value="50" min="1" max="255" style="width:58px"></div>
     </div>
-    <div class="field"><label>Start</label><input type="number" id="rStart" value="1"  min="0" max="254" style="width:58px"></div>
-    <div class="field"><label>End</label>  <input type="number" id="rEnd"   value="50" min="1" max="255" style="width:58px"></div>
-    <div class="field"><label>Port</label> <input type="number" id="rPort"  value="4444" min="1" max="65535" style="width:72px"></div>
-    <div class="field"><label>Timeout (s)</label><input type="number" id="rTimeout" value="5" min="2" max="30" style="width:52px"></div>
-    <div class="field"><label>Concurrent</label> <input type="number" id="rConc"    value="10" min="1" max="24" style="width:52px"></div>
-    <div class="field"><label>NIC / Interface</label>
-      <select id="rNic" style="width:170px"><option value="">Auto (any)</option></select></div>
+    <!-- Secondary options — de-emphasized -->
+    <div style="display:flex;align-items:flex-end;gap:10px;opacity:.5">
+      <div class="field"><label>Port</label> <input type="number" id="rPort"  value="4444" min="1" max="65535" style="width:72px"></div>
+      <div class="field"><label>Timeout (s)</label><input type="number" id="rTimeout" value="5" min="2" max="30" style="width:52px"></div>
+      <div class="field"><label>Concurrent</label> <input type="number" id="rConc"    value="10" min="1" max="24" style="width:52px"></div>
+      <div class="field"><label>NIC / Interface</label>
+        <select id="rNic" style="width:170px"><option value="">Auto (any)</option></select></div>
+    </div>
     <div class="field" style="justify-content:flex-end">
       <button class="btn primary" id="scanBtn" onclick="toggleScan()">
         <svg viewBox="0 0 11 11" fill="none"><circle cx="5.5" cy="5.5" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 2.5v3.5l2 1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
@@ -1445,8 +1451,9 @@ function updateNetResultsTb() {
 }
 
 // ── ffprobe parse ─────────────────────────────────────────────────────────────
-const CC_CODECS = new Set(['eia_608','eia_608_line21','eia_708','dvb_subtitle','dvb_teletext',
-  'hdmv_pgs_subtitle','mov_text','subrip','webvtt','cea_708','cc']);
+// True closed-caption codecs (EIA/CEA 608/708). Subtitle formats (DVB/PGS/SRT/
+// VTT/teletext) are detected by codec_type === 'subtitle' and tracked separately.
+const CC_CODECS = new Set(['eia_608', 'eia_608_line21', 'eia_708', 'cea_708', 'cc']);
 
 function ccLabel(s) {
   const cn = (s.codec_name || '').toLowerCase();
@@ -1467,7 +1474,7 @@ function parseProbe(raw) {
   if (!raw) return null;
   const st = raw.streams || [];
   let video = null, audio = null;
-  const captions = [];
+  const subtitles = [], closedCaptions = [];
 
   for (const s of st) {
     if (s.codec_type === 'video' && !video) {
@@ -1477,6 +1484,10 @@ function parseProbe(raw) {
         fps: parseFps(s.r_frame_rate || s.avg_frame_rate),
         br: s.bit_rate ? fmt(+s.bit_rate) : (raw.format?.bit_rate ? fmt(+raw.format.bit_rate) : null),
       };
+      // ffprobe flags A/53 embedded captions on the video stream itself.
+      if (s.closed_captions === 1 || s.closed_captions === '1') {
+        closedCaptions.push({ codec: 'cea-608/708', lang: '', label: 'CEA-608/708 (embedded)' });
+      }
     }
     if (s.codec_type === 'audio' && !audio) {
       audio = {
@@ -1486,12 +1497,16 @@ function parseProbe(raw) {
         br: s.bit_rate ? fmt(+s.bit_rate) : null,
       };
     }
-    // Captions / subtitle / data tracks
+    // Distinguish real subtitles (their own codec_type) from closed captions
+    // (608/708, either as a data track or embedded — captured above).
     const cn = (s.codec_name || '').toLowerCase();
-    if (s.codec_type === 'subtitle' || s.codec_type === 'data' || CC_CODECS.has(cn)) {
-      captions.push({ codec: s.codec_name || '', lang: s.tags?.language || '', label: ccLabel(s) });
+    if (s.codec_type === 'subtitle') {
+      subtitles.push({ codec: s.codec_name || '', lang: s.tags?.language || '', label: ccLabel(s) });
+    } else if (CC_CODECS.has(cn) || (s.codec_type === 'data' && /608|708|cc/.test(cn))) {
+      closedCaptions.push({ codec: s.codec_name || '', lang: s.tags?.language || '', label: ccLabel(s) });
     }
   }
+  const captions = [...closedCaptions, ...subtitles]; // combined (back-compat for other views)
 
   // Suggested name from programs/format tags
   let suggestedName = null;
@@ -1507,7 +1522,10 @@ function parseProbe(raw) {
     if (c && c.trim()) { suggestedName = c.trim(); break; }
   }
 
-  return (video || audio || captions.length || suggestedName) ? { video, audio, captions, suggestedName } : null;
+  return (video || audio || captions.length || suggestedName)
+    ? { video, audio, subtitles, closedCaptions, captions,
+        hasSubs: subtitles.length > 0, hasCC: closedCaptions.length > 0, suggestedName }
+    : null;
 }
 
 function parseFps(str){if(!str||str==='0/0')return null;const[a,b]=str.split('/').map(Number);if(!b)return null;const f=a/b;return f>0?f.toFixed(2).replace(/\.00$/,'')+' fps':null;}
@@ -1535,11 +1553,17 @@ function renderMeta(m) {
     if (au.br)    html += '<span class="meta-val dim" style="margin-left:2px">' + esc(au.br) + '</span>';
     html += '</div>';
   }
-  if (m.captions && m.captions.length > 0) {
-    html += '<div class="meta-row" style="margin-top:2px">';
-    const shown = m.captions.slice(0, 3);
-    for (const cc of shown) html += '<span class="cc-pill">' + esc(cc.label) + '</span>';
-    if (m.captions.length > 3) html += '<span class="cc-pill">+' + (m.captions.length - 3) + ' more</span>';
+  if (m.closedCaptions && m.closedCaptions.length > 0) {
+    html += '<div class="meta-row" style="margin-top:2px"><span class="meta-tag" style="color:var(--green)">CC</span>';
+    for (const cc of m.closedCaptions.slice(0, 3))
+      html += '<span class="cc-pill" style="border-color:rgba(61,220,132,.5);color:var(--green)">' + esc(cc.label) + '</span>';
+    if (m.closedCaptions.length > 3) html += '<span class="cc-pill">+' + (m.closedCaptions.length - 3) + '</span>';
+    html += '</div>';
+  }
+  if (m.subtitles && m.subtitles.length > 0) {
+    html += '<div class="meta-row" style="margin-top:2px"><span class="meta-tag">SUBS</span>';
+    for (const sb of m.subtitles.slice(0, 3)) html += '<span class="cc-pill">' + esc(sb.label) + '</span>';
+    if (m.subtitles.length > 3) html += '<span class="cc-pill">+' + (m.subtitles.length - 3) + '</span>';
     html += '</div>';
   }
   if (m.suggestedName) {
