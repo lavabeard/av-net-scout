@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   stopScan:      ()        => ipcRenderer.invoke('stop-scan'),
   onScanResult:  cb => ipcRenderer.on('scan-result',  (_, d) => cb(d)),
   onScanDone:    cb => ipcRenderer.on('scan-done',    (_, d) => cb(d)),
+  onScanBitrate: cb => ipcRenderer.on('scan-bitrate', (_, d) => cb(d)),
 
   // SAP
   startSap:      (iface)   => ipcRenderer.invoke('start-sap', { iface }),

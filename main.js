@@ -63,7 +63,12 @@ function probeUrl(url, timeoutMs) {
   return new Promise(resolve => {
     const ffprobe = findFfprobe();
     const µs = Math.max(1000000, (timeoutMs - 1500) * 1000);
-    const args = ['-v','quiet','-print_format','json','-show_streams','-show_format','-show_programs','-timeout',String(µs),'-fflags','nobuffer',url];
+    // Larger probesize/analyzeduration so ffprobe reads enough of the stream to
+    // report resolution AND detect embedded EIA/CEA 608/708 closed captions (the
+    // closed_captions flag is only set once caption data is seen). nobuffer is
+    // dropped — it can make ffprobe give up before captions/resolution appear.
+    const args = ['-v','quiet','-print_format','json','-show_streams','-show_format','-show_programs',
+                  '-probesize','8000000','-analyzeduration','5000000','-timeout',String(µs),url];
     let stdout = '';
     let proc;
     const kill = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} resolve({ error: 'timeout' }); }, timeoutMs);
@@ -102,6 +107,43 @@ function avSummary(result) {
   };
 }
 
+// A range-scan hit only counts as a real feed if ffprobe actually decoded a
+// video stream WITH a resolution, or an audio stream. ffprobe returns ok for any
+// ambient packets on the port, which is the source of phantom "feeds" — this gate
+// drops anything we couldn't verify.
+function scanLive(result) {
+  if (!result || !result.ok || !result.raw) return false;
+  const st = result.raw.streams || [];
+  if (st.some(s => s.codec_type === 'video' && s.width && s.height)) return true;
+  if (st.some(s => s.codec_type === 'audio' && s.codec_name)) return true;
+  return false;
+}
+
+// Accurate bitrate: ffprobe's format/stream bit_rate is unreliable for live UDP
+// (no duration). Instead sum actual packet sizes over a short interval. Returns
+// bits/sec or null. Runs concurrently with the scan, updating the card when done.
+function measureBitrate(url, secs) {
+  return new Promise(resolve => {
+    const ffprobe = findFfprobe();
+    const args = ['-v','quiet','-print_format','json','-show_entries','packet=size',
+                  '-read_intervals','%+' + secs, url];
+    let out = '', proc;
+    const kill = setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} resolve(null); }, (secs + 4) * 1000);
+    try { proc = spawn(ffprobe, args); }
+    catch { clearTimeout(kill); resolve(null); return; }
+    proc.stdout.on('data', d => { out += d.toString(); });
+    proc.on('close', () => {
+      clearTimeout(kill);
+      try {
+        const pkts = (JSON.parse(out).packets) || [];
+        let bytes = 0; for (const p of pkts) bytes += parseInt(p.size, 10) || 0;
+        resolve(secs > 0 && bytes > 0 ? Math.round(bytes * 8 / secs) : null);
+      } catch { resolve(null); }
+    });
+    proc.on('error', () => { clearTimeout(kill); resolve(null); });
+  });
+}
+
 // ── Range scan ────────────────────────────────────────────────────────────────
 let scanCtx = { running: false, cancel: false };
 
@@ -120,8 +162,11 @@ async function runScan(event, { prefix, start, end, port, iface, concurrency, pr
       const url = iface ? base + '?localaddr=' + iface : base;
       const res = await probeUrl(url, timeoutMs);
       completed++;
-      if (res.ok) found++;
-      send('scan-result', { ip, port, url, result: res, progress: { completed, total, found } });
+      const live = scanLive(res);
+      if (live) found++;
+      send('scan-result', { ip, port, url, result: res, live, progress: { completed, total, found } });
+      // Measure real bitrate for confirmed feeds (concurrent — doesn't block the scan).
+      if (live) measureBitrate(url, 2).then(bps => { if (bps) send('scan-bitrate', { ip, port, bps }); });
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrent, addrs.length) }, worker));

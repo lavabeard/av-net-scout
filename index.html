@@ -458,8 +458,8 @@ select{color:var(--t2);cursor:pointer}
   </button>
   <div class="results-tb-right">
     <select id="sortSel" onchange="rerenderGrid()" style="height:24px;font-size:10px">
+      <option value="ip" selected>IP order (.1 → .254)</option>
       <option value="order">Order found</option>
-      <option value="ip">IP address</option>
       <option value="bitrate">Bitrate</option>
       <option value="name">Name</option>
     </select>
@@ -798,6 +798,10 @@ window.addEventListener('DOMContentLoaded', async () => {
 function bindEvents() {
   window.api.onScanResult(onScanResult);
   window.api.onScanDone(onScanDone);
+  window.api.onScanBitrate(d => {
+    const s = streams.get(d.ip + ':' + d.port);
+    if (s) { s.measuredBps = d.bps; renderCard(s); }
+  });
   window.api.onSapAnnounce(onSapAnnounce);
   window.api.onSapReady(() => log('info', 'SAP listener active on 224.2.127.254:9875'));
   window.api.onSapError(d => { log('err', 'SAP: ' + d.message); stopSap(); });
@@ -1285,7 +1289,10 @@ function onScanResult(d) {
   document.getElementById('progFill').style.width=pct+'%';
   document.getElementById('progStats').textContent=progress.completed+' / '+progress.total+' ('+pct+'%)';
   document.getElementById('progFound').textContent=progress.found?'● '+progress.found+' live':'';
-  if (result.ok) upsertStream({key:ip+':'+port,ip,port,url,source:'scan',result,seq:streamSeq++,iface:scanIface});
+  if (d.live) {
+    upsertStream({key:ip+':'+port,ip,port,url,source:'scan',result,seq:streamSeq++,iface:scanIface});
+    if (v('sortSel') !== 'order') rerenderGrid();   // keep live results in sorted (IP) order
+  }
   else if (result.error==='not_found'&&!window._ffWarn) {
     window._ffWarn=true;
     log('warn','ffprobe not found — install ffmpeg and ensure it is in PATH');
@@ -1747,6 +1754,12 @@ function renderCard(s) {
   else if (isProbing){ dotCls = 'probing'; lblCls = 'probing'; lblTxt = 'PROBING'; }
 
   const meta = isLive ? parseProbe(r.raw) : null;
+  // Prefer the measured bitrate (packet-size sampled) over ffprobe's unreliable
+  // live-UDP value.
+  if (meta && s.measuredBps) {
+    const mbr = fmt(s.measuredBps);
+    if (meta.video) meta.video.br = mbr; else meta.video = { br: mbr };
+  }
   const oct = s.ip.split('.'), last = oct.pop(), pre = oct.join('.');
   const nk = nameKey(s);
   const name = nameStore[nk] || '';
@@ -1995,7 +2008,7 @@ function getSorted() {
   return arr;
 }
 function ipNum(ip) { return ip.split('.').reduce((a, o) => (a * 256) + parseInt(o), 0); }
-function getBr(s) { const m = s.result && s.result.ok ? parseProbe(s.result.raw) : null; return m && m.video && m.video.br ? parseFloat(m.video.br) * 1e6 : 0; }
+function getBr(s) { if (s.measuredBps) return s.measuredBps; const m = s.result && s.result.ok ? parseProbe(s.result.raw) : null; return m && m.video && m.video.br ? parseFloat(m.video.br) * 1e6 : 0; }
 
 async function openAllVlc() {
   const live = getLive(); if (!live.length) { log('warn', 'No live streams'); return; }
